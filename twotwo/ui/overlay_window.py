@@ -109,6 +109,10 @@ class OverlayWindow(QMainWindow):
         """Set audio amplitude for speaking animation."""
         self.avatar.set_audio_amplitude(amplitude)
     
+    def set_opacity(self, opacity: float):
+        """Set avatar opacity (0.0 to 1.0)."""
+        self.avatar.set_opacity(opacity)
+    
     def show_text(self, text: str, duration: float = 0):
         """Show AI response text with smart positioning based on screen location.
         
@@ -168,9 +172,8 @@ class OverlayWindow(QMainWindow):
         text_width = self.text_display.width()
         text_height = self.text_display.height()
         
-        # Avatar internal padding: visible aperture is ~75% of widget size
-        # This lets us position text closer to the actual visible avatar
-        avatar_padding = int(self.avatar_size * 0.12)  # ~25px for 200px avatar
+        # Small offset to bring text closer to avatar (but not overlapping)
+        avatar_padding = int(self.avatar_size * 0.05)  # ~10px for 200px avatar
         
         # Determine horizontal zone (left third, center third, right third)
         left_zone = screen_width / 3

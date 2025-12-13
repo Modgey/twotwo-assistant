@@ -161,10 +161,22 @@ class Controller(QObject):
             if self._settings.isVisible():
                 self._settings.hide()
             else:
-                # Position near the overlay
+                # Position near the overlay, clamped to screen
                 if self._overlay:
-                    pos = self._overlay.pos()
-                    self._settings.move(pos.x() + self._overlay.width() + 10, pos.y())
+                    from PySide6.QtWidgets import QApplication
+                    screen = QApplication.primaryScreen().availableGeometry()
+                    
+                    # Try to position to the right of overlay
+                    x = self._overlay.pos().x() + self._overlay.width() + 10
+                    y = self._overlay.pos().y()
+                    
+                    # Clamp to screen bounds
+                    x = min(x, screen.right() - self._settings.width())
+                    x = max(x, screen.left())
+                    y = min(y, screen.bottom() - self._settings.height())
+                    y = max(y, screen.top())
+                    
+                    self._settings.move(x, y)
                 self._settings.show()
                 self._settings.raise_()
     
@@ -179,6 +191,14 @@ class Controller(QObject):
             self._tts.speed = value
         elif key == "hotkey" and self._hotkey:
             self._hotkey.set_ptt_key(value)
+        elif key == "stt_model":
+            from voice.stt import WhisperSTT
+            self._stt = WhisperSTT(model_name=value)
+            print(f"Switched to STT model: {value}")
+        elif key == "opacity" and self._overlay:
+            self._overlay.set_opacity(value)
+        elif key == "avatar_size":
+            print(f"Avatar size change requires restart to take effect")
     
     @Slot()
     def _on_toggle_visibility(self):
@@ -245,8 +265,8 @@ class Controller(QObject):
         audio = self._recorder.stop()
         print(f"Recording stopped. Got {len(audio)} samples")
         
-        # Check minimum duration (0.3 seconds at 16kHz = 4800 samples)
-        min_samples = int(0.3 * 16000)
+        # Check minimum duration (0.15 seconds at 16kHz = 2400 samples)
+        min_samples = int(0.15 * 16000)
         if len(audio) < min_samples:
             print(f"Recording too short ({len(audio)} < {min_samples}), ignoring")
             self.set_avatar_state(AvatarState.IDLE)

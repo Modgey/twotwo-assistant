@@ -398,7 +398,7 @@ class TTSQueue:
             channels=1,
             dtype=np.float32,
             callback=audio_callback,
-            blocksize=1024,  # Smaller buffer for lower latency
+            blocksize=512,  # Small buffer for low latency
         )
         self._stream.start()
     

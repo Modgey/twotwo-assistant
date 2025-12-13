@@ -41,7 +41,7 @@ DEFAULT_CONFIG = {
         "hotkey": "x",
         "stt_model": "tiny",
         "tts_voice": "en_US-lessac-medium",
-        "tts_speed": 1.1,
+        "tts_speed": 1.25,
         "voice_style": "claptrap",
         "input_device": None,
         "output_device": None

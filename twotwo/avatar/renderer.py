@@ -41,6 +41,7 @@ class AvatarRenderer(QWidget):
         # Avatar color - from shared theme
         self._color = AMBER_FULL
         self._glow_color = AMBER_GLOW
+        self._opacity = 1.0  # 0.0 to 1.0
         
         # Hologram effect settings - from shared theme
         self._scanline_spacing = SCANLINE_SPACING
@@ -132,6 +133,10 @@ class AvatarRenderer(QWidget):
     def set_audio_amplitude(self, amplitude: float):
         """Set audio amplitude for speaking animation."""
         self._audio_amplitude = max(0, min(1, amplitude))
+    
+    def set_opacity(self, opacity: float):
+        """Set avatar opacity (0.0 to 1.0)."""
+        self._opacity = max(0.0, min(1.0, opacity))
     
     def _apply_expression(self, expr: ExpressionParams):
         """Apply expression parameters."""
@@ -588,6 +593,12 @@ class AvatarRenderer(QWidget):
         
         # Apply hologram effects
         hologram_surface = self._apply_hologram_effects(scaled_surface)
+        
+        # Apply opacity
+        if self._opacity < 1.0:
+            alpha = pygame.surfarray.pixels_alpha(hologram_surface)
+            alpha[:] = (alpha * self._opacity).astype('uint8')
+            del alpha
         
         data = pygame.image.tostring(hologram_surface, "RGBA")
         qimage = QImage(data, self.avatar_size, self.avatar_size, QImage.Format.Format_RGBA8888)

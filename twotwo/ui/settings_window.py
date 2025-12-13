@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from config import get_config
 from ui.theme import AMBER
+from voice.stt import WhisperSTT
 
 
 class SettingsSection(QFrame):
@@ -318,7 +319,12 @@ class SettingsWindow(QWidget):
         voice_section.add_row("Speed", self._tts_speed)
         
         self._stt_model = QComboBox()
-        self._stt_model.addItems(["Tiny", "Base", "Small"])
+        available_models = WhisperSTT.list_available_models()
+        if available_models:
+            self._stt_model.addItems([m.capitalize() for m in available_models])
+        else:
+            self._stt_model.addItem("No models found")
+            self._stt_model.setEnabled(False)
         self._stt_model.currentTextChanged.connect(self._on_stt_model_changed)
         voice_section.add_row("STT Model", self._stt_model)
         
@@ -376,10 +382,11 @@ class SettingsWindow(QWidget):
         speed = self.config.get("voice", "tts_speed", default=1.0)
         self._tts_speed.setValue(int(speed * 100))
         
-        # STT model
+        # STT model - find in available models
         model = self.config.get("voice", "stt_model", default="tiny")
-        model_map = {"tiny": 0, "base": 1, "small": 2}
-        self._stt_model.setCurrentIndex(model_map.get(model.lower(), 0))
+        idx = self._stt_model.findText(model.capitalize())
+        if idx >= 0:
+            self._stt_model.setCurrentIndex(idx)
         
         # PTT key
         key = self.config.get("voice", "hotkey", default="x")
