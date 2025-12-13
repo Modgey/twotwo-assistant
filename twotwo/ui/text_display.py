@@ -19,45 +19,25 @@ from ui.theme import (
 class TextDisplay(QWidget):
     """Clean hologram-styled text display using Pygame."""
     
-    # Font sizes - change these to adjust text size
-    FONT_SIZE = 24          # Main response text
-    FONT_SIZE_SUBTLE = 16   # Subtle/user input text
+    FONT_SIZE = 20  # Main response text
     
-    def __init__(self, parent=None, subtle: bool = False):
-        """Create text display.
-        
-        Args:
-            parent: Parent widget
-            subtle: If True, use dimmer colors and smaller font (for user input)
-        """
+    def __init__(self, parent=None):
+        """Create text display."""
         super().__init__(parent)
         
         self.config = get_config()
-        self._subtle = subtle
         
         # Display properties
         self._max_width = 280
-        self._padding = 2  # Minimal padding - tight to text
+        self._padding = 1  # Minimal padding - tight to text
         
-        # Colors based on style
-        if subtle:
-            # Subtle style - white/gray, transparent for user input
-            self._text_color = (180, 180, 180)        # Light gray
-            self._glow_color = (150, 150, 150, 20)    # Very subtle gray glow
-            self._shadow_color = (0, 0, 0)
-            self._shadow_offset = 2
-            self._bg_color = (0, 0, 0, 30)            # Very transparent bg
-            self._bg_blur_passes = 1
-            self._bold_render = False                  # Not bold
-        else:
-            # Normal style - bright for AI response
-            self._text_color = AMBER                  # Solid amber text
-            self._glow_color = (*AMBER_GLOW[:3], 50)  # Subtle glow
-            self._shadow_color = (0, 0, 0)
-            self._shadow_offset = 5
-            self._bg_color = (0, 0, 0, 60)            # Very subtle background
-            self._bg_blur_passes = 2
-            self._bold_render = True                   # Bold
+        # Colors
+        self._text_color = AMBER
+        self._glow_color = (*AMBER_GLOW[:3], 50)
+        self._shadow_color = (0, 0, 0)
+        self._shadow_offset = 5
+        self._bg_color = (0, 0, 0, 60)
+        self._bg_blur_passes = 2
         
         # Text state
         self._text = ""
@@ -80,9 +60,8 @@ class TextDisplay(QWidget):
             pygame.init()
         pygame.font.init()
         
-        # Load Monofonto font - size depends on subtle mode
-        font_size = self.FONT_SIZE_SUBTLE if self._subtle else self.FONT_SIZE
-        self._font = self._load_font(font_size)
+        # Load terminal font
+        self._font = self._load_font(self.FONT_SIZE)
         
         # Surface
         self._surface = None
@@ -100,27 +79,25 @@ class TextDisplay(QWidget):
         self._last_time = pygame.time.get_ticks()
     
     def _load_font(self, size: int):
-        """Load Monofonto font (bold) with fallback."""
-        # Try Monofonto from assets folder
+        """Load VT323 terminal font with fallback."""
+        from pathlib import Path
+        
+        # Try VT323 from assets folder (Fallout/Portal terminal aesthetic)
         try:
-            from pathlib import Path
-            font_path = Path(__file__).parent.parent.parent / "assets" / "fonts" / "Monofonto.ttf"
+            font_path = Path(__file__).parent.parent / "assets" / "fonts" / "VT323-Regular.ttf"
             if font_path.exists():
-                font = pygame.font.Font(str(font_path), size)
-                # Monofonto is already bold by design, but we can make it bolder
-                return font
+                # VT323 looks best at slightly larger sizes
+                return pygame.font.Font(str(font_path), int(size * 1.2))
         except Exception:
             pass
         
-        # Try system Monofonto
+        # Try system VT323
         try:
-            # Monofonto is typically bold by default
-            font = pygame.font.SysFont("Monofonto", size)
-            return font
+            return pygame.font.SysFont("VT323", int(size * 1.2))
         except Exception:
             pass
         
-        # Fallback to Consolas bold (similar monospace feel)
+        # Fallback to Consolas (similar monospace feel)
         return pygame.font.SysFont("Consolas", size, bold=True)
     
     def set_alignment(self, alignment: str):
@@ -329,10 +306,10 @@ class TextDisplay(QWidget):
             shadow_surface.set_alpha(alpha)
             self._surface.blit(shadow_surface, (x + offset, y + offset))
         
-        # Draw subtle glow
+        # Draw glow
         glow_offsets = [(-1, -1), (1, -1), (-1, 1), (1, 1), (0, -1), (0, 1), (-1, 0), (1, 0)]
         glow_surface = self._font.render(text, True, self._glow_color[:3])
-        glow_surface.set_alpha(20 if self._subtle else 30)
+        glow_surface.set_alpha(30)
         for dx, dy in glow_offsets:
             self._surface.blit(glow_surface, (x + dx, y + dy))
         
@@ -340,10 +317,9 @@ class TextDisplay(QWidget):
         text_surface = self._font.render(text, True, self._text_color)
         self._surface.blit(text_surface, (x, y))
         
-        # Extra boldness only for non-subtle text
-        if getattr(self, '_bold_render', True):
-            text_surface.set_alpha(200)
-            self._surface.blit(text_surface, (x + 1, y))
+        # Extra boldness
+        text_surface.set_alpha(200)
+        self._surface.blit(text_surface, (x + 1, y))
     
     def paintEvent(self, event):
         """Render to Qt."""

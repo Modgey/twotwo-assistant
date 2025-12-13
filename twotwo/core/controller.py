@@ -226,8 +226,6 @@ class Controller(QObject):
             # Clear previous text
             if self._overlay:
                 self._overlay.clear_text()
-                # TODO: Show listening animation (disabled for now)
-                # self._overlay.show_listening()
             
             # Start recording
             self.set_avatar_state(AvatarState.LISTENING)
@@ -247,17 +245,11 @@ class Controller(QObject):
         audio = self._recorder.stop()
         print(f"Recording stopped. Got {len(audio)} samples")
         
-        # Stop listening animation
-        if self._overlay:
-            self._overlay.stop_listening()
-        
         # Check minimum duration (0.3 seconds at 16kHz = 4800 samples)
         min_samples = int(0.3 * 16000)
         if len(audio) < min_samples:
             print(f"Recording too short ({len(audio)} < {min_samples}), ignoring")
             self.set_avatar_state(AvatarState.IDLE)
-            if self._overlay:
-                self._overlay.clear_user_text()
             return
         
         # Check if audio is mostly silence (very low threshold)
@@ -270,8 +262,6 @@ class Controller(QObject):
         if rms < silence_threshold:
             print(f"Recording is completely silent (RMS: {rms:.6f}), ignoring")
             self.set_avatar_state(AvatarState.IDLE)
-            if self._overlay:
-                self._overlay.clear_user_text()
             return
         
         # Valid audio - start transcription
@@ -324,10 +314,6 @@ class Controller(QObject):
             
             print(f"Transcribed: {text}")
             
-            # TODO: Show user text above avatar (disabled for now)
-            # if self._overlay:
-            #     self._overlay.show_user_text(text)
-            
             # For now, just echo back the text via TTS
             # In Phase 4, this will go to the LLM
             if self._tts_queue and self._tts and self._tts.is_available():
@@ -370,10 +356,9 @@ class Controller(QObject):
             QTimer.singleShot(int(duration * 1000), self._hide_all_text)
     
     def _hide_all_text(self):
-        """Hide both user and response text."""
+        """Hide response text."""
         if self._overlay:
             self._overlay._hide_text()
-            self._overlay.hide_user_text()
     
     def _cleanup(self):
         """Clean up resources before shutdown."""

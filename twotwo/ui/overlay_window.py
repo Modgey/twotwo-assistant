@@ -80,14 +80,8 @@ class OverlayWindow(QMainWindow):
         self.setCentralWidget(None)  # Don't use central widget layout
     
     def _setup_text_display(self):
-        """Set up text displays - user input above, response next to avatar."""
-        # User input text (right above avatar) - subtle style (hidden for now)
-        self.user_text_display = TextDisplay(self, subtle=True)
-        self.user_text_display.move(self._avatar_x, 0)
-        self.user_text_display.hide()
-        
-        # AI response text (next to avatar, vertically centered) - normal style  
-        self.text_display = TextDisplay(self, subtle=False)
+        """Set up text display for AI response."""
+        self.text_display = TextDisplay(self)
         # Store position info for dynamic centering
         self._response_x = self._avatar_x + self.avatar_size
         self._avatar_center_y = self._avatar_y + (self.avatar_size // 2)
@@ -174,6 +168,10 @@ class OverlayWindow(QMainWindow):
         text_width = self.text_display.width()
         text_height = self.text_display.height()
         
+        # Avatar internal padding: visible aperture is ~75% of widget size
+        # This lets us position text closer to the actual visible avatar
+        avatar_padding = int(self.avatar_size * 0.12)  # ~25px for 200px avatar
+        
         # Determine horizontal zone (left third, center third, right third)
         left_zone = screen_width / 3
         right_zone = screen_width * 2 / 3
@@ -183,25 +181,25 @@ class OverlayWindow(QMainWindow):
         
         # Calculate best position (alignment already set in show_text)
         if avatar_center_x < left_zone:
-            # Avatar on LEFT → text to the RIGHT
-            text_x = self._avatar_x + self.avatar_size + 5
+            # Avatar on LEFT → text to the RIGHT (tuck into avatar padding)
+            text_x = self._avatar_x + self.avatar_size - avatar_padding
             text_y = self._avatar_y + (self.avatar_size // 2) - (text_height // 2)
             
         elif avatar_center_x > right_zone:
-            # Avatar on RIGHT → text to the LEFT
-            text_x = self._avatar_x - text_width - 5
+            # Avatar on RIGHT → text to the LEFT (tuck into avatar padding)
+            text_x = self._avatar_x + avatar_padding - text_width
             text_y = self._avatar_y + (self.avatar_size // 2) - (text_height // 2)
             
         else:
             # Avatar in CENTER horizontally
             if avatar_center_y < vertical_mid:
-                # Top center → text BELOW, centered under avatar
+                # Top center → text BELOW (tuck into avatar padding)
                 text_x = self._avatar_x + (self.avatar_size // 2) - (text_width // 2)
-                text_y = self._avatar_y + self.avatar_size + 5
+                text_y = self._avatar_y + self.avatar_size - avatar_padding
             else:
-                # Bottom center → text ABOVE, centered above avatar
+                # Bottom center → text ABOVE (tuck into avatar padding)
                 text_x = self._avatar_x + (self.avatar_size // 2) - (text_width // 2)
-                text_y = self._avatar_y - text_height - 5
+                text_y = self._avatar_y + avatar_padding - text_height
         
         # Clamp to stay within window bounds
         text_x = max(0, text_x)
@@ -209,35 +207,14 @@ class OverlayWindow(QMainWindow):
         
         self.text_display.move(int(text_x), int(text_y))
     
-    def show_user_text(self, text: str):
-        """Show user input text above the avatar (subtle style)."""
-        self.user_text_display.show_text(text)
-    
-    def show_listening(self):
-        """Show listening animation above avatar."""
-        self.user_text_display.show_listening()
-    
-    def stop_listening(self):
-        """Stop listening animation."""
-        self.user_text_display.stop_listening()
-    
-    def hide_user_text(self):
-        """Hide the user input text."""
-        self.user_text_display.hide_text()
-    
-    def clear_user_text(self):
-        """Immediately clear user text."""
-        self.user_text_display.clear()
-    
     def _hide_text(self):
         """Hide the AI response text display."""
         self.text_display.hide_text()
     
     def clear_text(self):
-        """Immediately clear and hide all text."""
+        """Immediately clear and hide text."""
         self._text_hide_timer.stop()
         self.text_display.clear()
-        self.user_text_display.clear()
     
     def keyPressEvent(self, event):
         """Track Alt key for drag mode."""
@@ -309,5 +286,4 @@ class OverlayWindow(QMainWindow):
         """Clean up avatar renderer on close."""
         self.avatar.cleanup()
         self.text_display.cleanup()
-        self.user_text_display.cleanup()
         super().closeEvent(event)
