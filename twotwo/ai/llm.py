@@ -236,72 +236,30 @@ class OllamaLLM:
             full_response = ""
             
             try:
-                # Count approximate tokens being sent
-                system_chars = len(self.system_prompt)
-                total_chars = sum(len(m.get("content", "")) for m in messages)
-                approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
-                print(f"[DEBUG] System prompt: {system_chars} chars, History: {len(recent_history)} msgs, Total: ~{approx_tokens} tokens")
-                
-                # Try using /api/generate for speed test (simpler than /api/chat)
-                use_generate_api = True  # Toggle for testing
-                
-                if use_generate_api:
-                    # Format as single prompt (like CLI does)
-                    prompt = f"System: {self.system_prompt}\n\n"
-                    for msg in recent_history:
-                        role = "User" if msg["role"] == "user" else "Assistant"
-                        prompt += f"{role}: {msg['content']}\n"
-                    prompt += f"User: {user_message}\nAssistant:"
-                    
-                    request_data = {
-                        "model": self.model,
-                        "prompt": prompt,
-                        "stream": True,
-                        "keep_alive": "30m",
-                    }
-                    api_endpoint = f"{self.host}/api/generate"
-                else:
-                    request_data = {
+                response = self._session.post(
+                    f"{self.host}/api/chat",
+                    json={
                         "model": self.model,
                         "messages": messages,
                         "stream": True,
                         "keep_alive": "30m",
-                    }
-                    api_endpoint = f"{self.host}/api/chat"
-                import time as _time
-                
-                t_request_start = _time.time()
-                response = self._session.post(
-                    api_endpoint,
-                    json=request_data,
+                    },
                     stream=True,
                     timeout=120,
                 )
-                t_response_received = _time.time()
-                print(f"[DEBUG] HTTP response received in {(t_response_received - t_request_start)*1000:.0f}ms")
                 
                 if response.status_code != 200:
                     if on_error:
                         on_error(f"Ollama returned status {response.status_code}")
                     return
                 
-                first_chunk_logged = False
                 for line in response.iter_lines():
-                    if not first_chunk_logged:
-                        t_first_chunk = _time.time()
-                        print(f"[DEBUG] First chunk received in {(t_first_chunk - t_request_start)*1000:.0f}ms (iter_lines wait: {(t_first_chunk - t_response_received)*1000:.0f}ms)")
-                        first_chunk_logged = True
-                    
                     if not line:
                         continue
                     
                     try:
                         data = json.loads(line)
-                        # Different response format for /api/generate vs /api/chat
-                        if use_generate_api:
-                            content = data.get("response", "")
-                        else:
-                            content = data.get("message", {}).get("content", "")
+                        content = data.get("message", {}).get("content", "")
                         if content:
                             full_response += content
                             on_token(content)
