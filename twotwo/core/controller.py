@@ -56,7 +56,9 @@ class Controller(QObject):
         # Voice state
         self._voice_enabled = False
         self._processing_lock = threading.Lock()
-        self._current_response = ""  # Accumulates streaming response
+        self._current_response = ""  # Accumulates streaming response for display
+        self._sentence_buffer = ""   # Accumulates tokens until sentence boundary
+        self._speaking_started = False  # Track if TTS has started for this response
         
         self._setup_components()
         self._connect_signals()
@@ -188,6 +190,8 @@ class Controller(QObject):
             if self._llm.is_available():
                 print(f"AI initialized with model: {self._llm.model}")
                 self._ai_enabled = True
+                # Pre-warm the model to reduce first-response latency
+                self._llm.warm_up()
             else:
                 print("Warning: Ollama connection failed")
                 self._ai_enabled = False
@@ -283,6 +287,7 @@ class Controller(QObject):
             print(f"Avatar size change requires restart to take effect")
         elif key == "ai_model" and self._llm:
             self._llm.set_model(value)
+            self._llm.warm_up()  # Pre-warm the new model
             print(f"Switched to AI model: {value}")
         elif key == "personality" and self._llm:
             self._llm.set_system_prompt(value)
@@ -444,6 +449,8 @@ class Controller(QObject):
     def _send_to_llm(self, user_message: str):
         """Send message to LLM with streaming."""
         self._current_response = ""
+        self._sentence_buffer = ""
+        self._speaking_started = False
         
         def on_token(token: str):
             self.llm_token_received.emit(token)
@@ -464,16 +471,102 @@ class Controller(QObject):
     
     @Slot(str)
     def _on_llm_token_received(self, token: str):
-        """Handle streaming token from LLM."""
+        """Handle streaming token from LLM with sentence-level TTS."""
         self._current_response += token
+        self._sentence_buffer += token
+        
         # Update display with accumulated response
         if self._overlay:
             self._overlay.show_text(self._current_response)
+        
+        # Check for sentence boundary to start speaking immediately
+        sentence = self._extract_complete_sentence()
+        if sentence:
+            self._speak_sentence(sentence)
+    
+    def _extract_complete_sentence(self) -> str | None:
+        """Extract a speakable chunk from the buffer - optimized for low latency.
+        
+        Aggressively extracts chunks to start speaking as soon as possible.
+        """
+        import re
+        
+        buffer = self._sentence_buffer
+        if not buffer:
+            return None
+        
+        # Very short minimum - speak almost anything meaningful
+        MIN_SPEAK_LEN = 8
+        
+        # === Strategy 1: Sentence-ending punctuation (highest priority) ===
+        # Speak immediately when we hit .!?
+        sentence_end = re.search(r'[.!?](?:\s|$)', buffer)
+        if sentence_end:
+            end_pos = sentence_end.start() + 1
+            sentence = buffer[:end_pos].strip()
+            if len(sentence) >= MIN_SPEAK_LEN:
+                self._sentence_buffer = buffer[end_pos:].lstrip()
+                return sentence
+        
+        # === Strategy 2: Newlines (immediate) ===
+        newline_match = re.search(r'\n', buffer)
+        if newline_match and newline_match.start() >= MIN_SPEAK_LEN:
+            end_pos = newline_match.start()
+            sentence = buffer[:end_pos].strip()
+            if sentence:
+                self._sentence_buffer = buffer[end_pos:].lstrip()
+                return sentence
+        
+        # === Strategy 3: Pause punctuation (aggressive) ===
+        # Speak at commas/colons after just 20 chars
+        if len(buffer) > 25:
+            pause_match = re.search(r'[,;:\-–—](?:\s|$)', buffer)
+            if pause_match and pause_match.start() >= 15:
+                end_pos = pause_match.start() + 1
+                sentence = buffer[:end_pos].strip()
+                self._sentence_buffer = buffer[end_pos:].lstrip()
+                return sentence
+        
+        # === Strategy 4: Word boundary fallback (very aggressive) ===
+        # After 40 chars, just break at any word boundary
+        if len(buffer) > 40:
+            # Find last space before position 40
+            space_match = re.search(r'\s', buffer[25:])
+            if space_match:
+                end_pos = 25 + space_match.start()
+                sentence = buffer[:end_pos].strip()
+                self._sentence_buffer = buffer[end_pos:].lstrip()
+                return sentence
+        
+        # === Strategy 5: Hard cutoff ===
+        # After 60 chars with no breaks, just speak it
+        if len(buffer) > 60:
+            sentence = buffer[:50].strip()
+            self._sentence_buffer = buffer[50:].lstrip()
+            return sentence
+        
+        return None
+    
+    def _speak_sentence(self, sentence: str):
+        """Send a sentence to TTS immediately."""
+        if not sentence.strip():
+            return
+        
+        if not self._tts_queue or not self._tts or not self._tts.is_available():
+            return
+        
+        # Mark that speaking has started (for avatar state)
+        if not self._speaking_started:
+            self._speaking_started = True
+            # Note: on_speaking_start callback in TTS will handle avatar state
+        
+        print(f"TTS (streaming): '{sentence[:40]}...'")
+        self._tts_queue.speak(sentence)
     
     @Slot(str)
     def _on_llm_response_ready(self, response: str):
         """Handle complete LLM response."""
-        print(f"LLM response: {response[:100]}...")
+        print(f"LLM response complete: {response[:100]}...")
         
         # Check for search request
         if self._search_handler and self._search_handler.is_enabled():
@@ -486,10 +579,19 @@ class Controller(QObject):
                 self._send_to_llm(follow_up)
                 return
         
-        # Speak the response
-        if self._tts_queue and self._tts and self._tts.is_available():
-            self._tts_queue.speak(response)
-        else:
+        # Speak any remaining text in the sentence buffer
+        remaining = self._sentence_buffer.strip()
+        if remaining:
+            self._speak_sentence(remaining)
+            self._sentence_buffer = ""
+        
+        # If nothing was spoken (very short response), speak the whole thing
+        if not self._speaking_started and response.strip():
+            if self._tts_queue and self._tts and self._tts.is_available():
+                self._tts_queue.speak(response)
+        
+        # If TTS not available, go to idle
+        if not self._tts_queue or not self._tts or not self._tts.is_available():
             print("TTS not available")
             self.set_avatar_state(AvatarState.IDLE)
     

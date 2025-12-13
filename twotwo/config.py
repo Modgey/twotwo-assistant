@@ -49,7 +49,7 @@ DEFAULT_CONFIG = {
     
     "ai": {
         "backend": "ollama",
-        "model": "llama3.2:3b",
+        "model": "gemma3:4b",
         "personality": "You are TwoTwo, a helpful AI assistant with a calm and professional demeanor. You provide concise, accurate responses.",
         "brave_api_key": "",
         "enable_search": True

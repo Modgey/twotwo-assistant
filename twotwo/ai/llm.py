@@ -52,6 +52,35 @@ class OllamaLLM:
         """Check if Ollama is available."""
         return self._available
     
+    def warm_up(self):
+        """Pre-warm the model to reduce first-response latency.
+        
+        Sends a minimal request to load the model into memory.
+        Call this during startup or periodically to keep model hot.
+        """
+        if not self._available:
+            return
+        
+        def _warm():
+            try:
+                # Send minimal request to load model
+                requests.post(
+                    f"{self.host}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": "hi",
+                        "stream": False,
+                        "options": {"num_predict": 1}  # Generate just 1 token
+                    },
+                    timeout=30,
+                )
+                print(f"LLM warmed up: {self.model}")
+            except Exception as e:
+                print(f"LLM warm-up failed: {e}")
+        
+        # Run in background to not block
+        threading.Thread(target=_warm, daemon=True).start()
+    
     def set_model(self, model: str):
         """Change the active model."""
         self.model = model

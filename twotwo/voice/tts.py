@@ -279,7 +279,10 @@ class PiperTTS:
 
 
 class TTSQueue:
-    """Queue for managing TTS synthesis and playback with streaming support."""
+    """Queue for managing TTS synthesis and playback with continuous streaming.
+    
+    Supports seamless playback of multiple sentences without gaps.
+    """
     
     def __init__(
         self,
@@ -301,11 +304,24 @@ class TTSQueue:
         self._effects = None
         self._init_effects()
         
-        self._queue: queue.Queue[str] = queue.Queue()
+        # Text queue for sentences to synthesize
+        self._text_queue: queue.Queue[str | None] = queue.Queue()
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+        self._synth_thread: Optional[threading.Thread] = None
+        self._playback_thread: Optional[threading.Thread] = None
         self._stream = None
+        
+        # State tracking
         self._speaking = False
+        self._synthesizing = False
+        self._pending_sentences = 0
+        self._state_lock = threading.Lock()
+        
+        # Audio buffer - chunks ready for playback
+        self._audio_chunks: queue.Queue[np.ndarray] = queue.Queue()
+        self._current_chunk: Optional[np.ndarray] = None
+        self._chunk_pos = 0
+        self._buffer_lock = threading.Lock()
     
     def _init_effects(self):
         """Initialize voice effects processor."""
@@ -339,71 +355,74 @@ class TTSQueue:
     def start(self):
         """Start the TTS queue processor."""
         self._running = True
-        self._thread = threading.Thread(target=self._process_queue, daemon=True)
-        self._thread.start()
+        # Synthesis thread - converts text to audio chunks
+        self._synth_thread = threading.Thread(target=self._synthesis_loop, daemon=True)
+        self._synth_thread.start()
     
     def stop(self):
         """Stop the TTS queue processor."""
         self._running = False
-        self._queue.put(None)  # Signal to exit
+        self._text_queue.put(None)  # Signal to exit
         self._stop_audio()
     
     def speak(self, text: str):
-        """Add text to the speech queue."""
-        self._queue.put(text)
+        """Add text to the speech queue for immediate synthesis."""
+        with self._state_lock:
+            self._pending_sentences += 1
+        self._text_queue.put(text)
     
-    def _start_audio_stream(self):
-        """Start the audio output stream."""
+    def _ensure_stream_running(self):
+        """Ensure audio stream is running."""
         import sounddevice as sd
         
         if self._stream is not None:
             return
         
-        self._audio_buffer = []
-        self._buffer_lock = threading.Lock()
-        self._buffer_pos = 0
-        
         def audio_callback(outdata, frames, time, status):
-            with self._buffer_lock:
-                if not self._audio_buffer:
-                    outdata.fill(0)
-                    if self.amplitude_callback:
-                        self.amplitude_callback(0.0)
-                    return
-                
-                # Flatten buffer and get frames
-                all_audio = np.concatenate(self._audio_buffer)
-                
-                if self._buffer_pos >= len(all_audio):
-                    outdata.fill(0)
-                    if self.amplitude_callback:
-                        self.amplitude_callback(0.0)
-                    return
-                
-                remaining = len(all_audio) - self._buffer_pos
-                to_copy = min(frames, remaining)
-                
-                outdata[:to_copy, 0] = all_audio[self._buffer_pos:self._buffer_pos + to_copy]
-                outdata[to_copy:].fill(0)
-                
-                self._buffer_pos += to_copy
-                
-                # Amplitude for avatar
-                if self.amplitude_callback and to_copy > 0:
-                    amp = np.sqrt(np.mean(outdata[:to_copy] ** 2))
+            """Audio callback - pulls from chunk queue."""
+            filled = 0
+            
+            while filled < frames:
+                with self._buffer_lock:
+                    # Need new chunk?
+                    if self._current_chunk is None or self._chunk_pos >= len(self._current_chunk):
+                        try:
+                            self._current_chunk = self._audio_chunks.get_nowait()
+                            self._chunk_pos = 0
+                        except queue.Empty:
+                            break
+                    
+                    # Copy from current chunk
+                    remaining = len(self._current_chunk) - self._chunk_pos
+                    to_copy = min(remaining, frames - filled)
+                    
+                    outdata[filled:filled + to_copy, 0] = self._current_chunk[self._chunk_pos:self._chunk_pos + to_copy]
+                    self._chunk_pos += to_copy
+                    filled += to_copy
+            
+            # Fill rest with silence
+            if filled < frames:
+                outdata[filled:].fill(0)
+            
+            # Amplitude for avatar
+            if self.amplitude_callback:
+                if filled > 0:
+                    amp = np.sqrt(np.mean(outdata[:filled] ** 2))
                     self.amplitude_callback(min(1.0, amp * 5))
+                else:
+                    self.amplitude_callback(0.0)
         
         self._stream = sd.OutputStream(
             samplerate=self.tts.sample_rate,
             channels=1,
             dtype=np.float32,
             callback=audio_callback,
-            blocksize=512,  # Small buffer for low latency
+            blocksize=1024,
         )
         self._stream.start()
     
     def _stop_audio(self):
-        """Stop the audio stream."""
+        """Stop the audio stream and clear buffers."""
         if self._stream:
             try:
                 self._stream.stop()
@@ -412,117 +431,140 @@ class TTSQueue:
                 pass
             self._stream = None
         
+        # Clear buffers
+        with self._buffer_lock:
+            self._current_chunk = None
+            self._chunk_pos = 0
+            while not self._audio_chunks.empty():
+                try:
+                    self._audio_chunks.get_nowait()
+                except queue.Empty:
+                    break
+        
         if self.amplitude_callback:
             self.amplitude_callback(0.0)
     
-    def _add_audio_chunk(self, chunk: np.ndarray):
-        """Add audio chunk to the buffer."""
-        with self._buffer_lock:
-            self._audio_buffer.append(chunk)
-    
-    def _wait_for_playback(self, timeout: float = 30.0):
-        """Wait for all buffered audio to finish playing."""
+    def _synthesis_loop(self):
+        """Main loop - synthesizes text as it arrives, keeps audio flowing."""
         import time
         
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            with self._buffer_lock:
-                if not self._audio_buffer:
-                    break
-                all_audio = np.concatenate(self._audio_buffer)
-                if self._buffer_pos >= len(all_audio):
-                    break
-            time.sleep(0.05)
-        else:
-            print("TTS: Playback wait timeout")
-    
-    def _process_queue(self):
-        """Process the TTS queue with streaming."""
         while self._running:
             try:
-                text = self._queue.get(timeout=0.1)
+                text = self._text_queue.get(timeout=0.05)
             except queue.Empty:
+                # Check if we should stop the stream (no more audio)
+                self._check_idle()
                 continue
             
             if text is None:
                 break
             
-            # Notify speaking start
-            self._speaking = True
-            if self.on_speaking_start:
-                self.on_speaking_start()
+            # Start speaking if not already
+            self._start_speaking_if_needed()
             
-            if self.streaming:
-                self._process_streaming(text)
-            else:
-                self._process_blocking(text)
+            # Synthesize this text
+            self._synthesize_text(text)
             
-            # Notify speaking end
-            self._speaking = False
-            if self.on_speaking_end:
-                self.on_speaking_end()
-    
-    def _process_streaming(self, text: str):
-        """Process text with streaming TTS."""
-        try:
-            # Start audio stream
-            self._start_audio_stream()
-            
-            with self._buffer_lock:
-                self._audio_buffer = []
-                self._buffer_pos = 0
-            
-            # Stream synthesis
-            done_event = threading.Event()
-            
-            def on_chunk(chunk):
-                # Apply robot voice effects to each chunk
-                processed = self._apply_effects(chunk)
-                self._add_audio_chunk(processed)
-            
-            def on_complete():
-                print("TTS synthesis complete")
-                done_event.set()
-            
-            print(f"TTS: Synthesizing '{text[:50]}...'")
-            self.tts.synthesize_streaming(text, on_chunk, on_complete)
-            
-            if not done_event.wait(timeout=30):
-                print("TTS: Synthesis timeout")
-            
-            # Wait for playback to finish
-            self._wait_for_playback()
-            
-        except Exception as e:
-            print(f"TTS streaming error: {e}")
-        finally:
-            self._stop_audio()
-    
-    def _process_blocking(self, text: str):
-        """Process text with blocking TTS (non-streaming fallback)."""
-        from voice.audio import AudioPlayer
+            # Mark sentence done
+            with self._state_lock:
+                self._pending_sentences = max(0, self._pending_sentences - 1)
         
-        audio = self.tts.synthesize(text)
-        if audio is None:
+        # Final cleanup
+        self._finish_speaking()
+    
+    def _start_speaking_if_needed(self):
+        """Start speaking state and audio stream if not already speaking."""
+        with self._state_lock:
+            if self._speaking:
+                return
+            self._speaking = True
+        
+        # Ensure stream is running
+        self._ensure_stream_running()
+        
+        # Notify callback
+        if self.on_speaking_start:
+            self.on_speaking_start()
+    
+    def _check_idle(self):
+        """Check if we're done speaking and should go idle."""
+        import time
+        
+        with self._state_lock:
+            if not self._speaking:
+                return
+            
+            # Still have pending sentences?
+            if self._pending_sentences > 0:
+                return
+        
+        # Check if audio buffer is empty
+        with self._buffer_lock:
+            has_audio = (not self._audio_chunks.empty() or 
+                        (self._current_chunk is not None and 
+                         self._chunk_pos < len(self._current_chunk)))
+        
+        if has_audio:
+            return  # Still playing audio
+        
+        # Wait a tiny bit to ensure no more sentences coming
+        time.sleep(0.1)
+        
+        # Double-check
+        with self._state_lock:
+            if self._pending_sentences > 0:
+                return
+        
+        if not self._text_queue.empty():
             return
         
-        # Apply robot voice effects
-        audio = self._apply_effects(audio)
+        # Truly done
+        self._finish_speaking()
+    
+    def _finish_speaking(self):
+        """Finish speaking and notify callback."""
+        with self._state_lock:
+            if not self._speaking:
+                return
+            self._speaking = False
         
-        player = AudioPlayer(amplitude_callback=self.amplitude_callback)
+        # Stop audio stream
+        self._stop_audio()
+        
+        # Notify callback
+        if self.on_speaking_end:
+            self.on_speaking_end()
+    
+    def _synthesize_text(self, text: str):
+        """Synthesize text and add audio chunks to buffer."""
         done_event = threading.Event()
         
-        player.play(audio, self.tts.sample_rate, lambda: done_event.set())
-        done_event.wait(timeout=30)
-        player.stop()
+        def on_chunk(chunk):
+            # Apply voice effects and add to playback queue
+            processed = self._apply_effects(chunk)
+            self._audio_chunks.put(processed)
+        
+        def on_complete():
+            done_event.set()
+        
+        print(f"TTS: '{text[:40]}...'")
+        self.tts.synthesize_streaming(text, on_chunk, on_complete)
+        
+        # Wait for synthesis (but audio plays in parallel)
+        if not done_event.wait(timeout=30):
+            print("TTS: Synthesis timeout")
     
     def clear(self):
         """Clear pending speech."""
-        while not self._queue.empty():
+        # Clear text queue
+        while not self._text_queue.empty():
             try:
-                self._queue.get_nowait()
+                self._text_queue.get_nowait()
             except queue.Empty:
                 break
+        
+        with self._state_lock:
+            self._pending_sentences = 0
         
         self._stop_audio()
 
