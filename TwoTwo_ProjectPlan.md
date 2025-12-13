@@ -201,9 +201,10 @@ class AvatarRenderer(QWidget):
 
 **Technology:** whisper.cpp via `pywhispercpp` or subprocess
 
-**Model:** `whisper-base` or `whisper-small` (user configurable)
-- `base`: ~74MB, faster, slightly less accurate
-- `small`: ~244MB, slower, more accurate
+**Model:** Auto-detected from installed models in `%APPDATA%/TwoTwo/whisper-models/`
+- Settings panel dynamically shows only available models
+- Common models: `tiny`, `base`, `small`, `medium`
+- Model can be switched live without restart
 
 **Behavior:**
 - Activated by push-to-talk hotkey (`X` key)
@@ -232,6 +233,11 @@ result = model.transcribe(audio_file)
 - Natural-sounding voice
 
 **Voice Model:** Start with `en_US-lessac-medium` (good quality/speed balance)
+
+**Performance Optimizations:**
+- TTS speed default: 1.25x (configurable 0.5x-1.5x)
+- Minimum recording duration: 0.15s (reduced from 0.3s)
+- Audio buffer size: 512 samples (reduced from 1024 for lower latency)
 
 **Implementation Approach:**
 ```python
@@ -337,14 +343,14 @@ def brave_search(query, api_key):
 
 #### General
 - Avatar position (top left / top right / bottom left / bottom right) - or "Reset to default"
-- Avatar size (small / medium / large)
-- Opacity slider (50% - 100%)
+- Avatar size (small / medium / large) - requires restart to apply
+- Opacity slider (50% - 100%) - applies live
 
 #### Voice
 - Push-to-talk hotkey (key capture)
-- STT model selection (base / small)
+- STT model selection (dynamically populated from installed models)
 - TTS voice selection (dropdown of available Piper voices)
-- TTS speed slider
+- TTS speed slider (50-150%, default 125%)
 - Input/output device selection
 
 #### AI
@@ -569,18 +575,21 @@ numpy>=1.24.0
 **Implemented Features:**
 - `ui/settings_window.py` - Premium minimal black/white settings panel
   - Voice style selection (Normal, Robot, Claptrap, GLaDOS, Metallic)
-  - TTS speed, STT model selection
+  - TTS speed slider (50-150%, default 125%)
+  - STT model selection (dynamically populated from installed models)
   - PTT key capture
-  - Avatar size and opacity controls
+  - Avatar size and opacity controls (opacity works live, size requires restart)
   - Draggable, frameless window with amber accents
+  - Screen boundary clamping to prevent window going off-screen
 - `ui/text_display.py` - Pygame-based hologram text display
   - Shared theme with avatar (amber colors, effects)
-  - Monofonto font (24px for response, 16px for user input)
+  - VT323 terminal font (Fallout/Portal aesthetic, 24px main text)
   - Typing animation with stable positioning
   - Smart adaptive positioning:
     - Left/right/center based on avatar screen position
     - Text alignment matches position (left/right/center)
     - Fixed-size container prevents shifting during animation
+    - Optimized spacing to keep text close to avatar without overlap
   - Subtle blurred background, drop shadow, glow effects
   - Fade in/out transitions
 - `ui/theme.py` - Shared visual constants (colors, effects, typography)
