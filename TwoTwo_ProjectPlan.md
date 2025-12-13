@@ -6,7 +6,7 @@ TwoTwo is a local AI assistant inspired by Jarvis from Iron Man. It features a f
 
 **Core Philosophy:** Everything runs locally for privacy and low latency. No cloud dependencies except optional web search.
 
-**Current Status:** Phase 1 (Foundation) and Phase 2 (Avatar) are complete. The avatar features a polished Emo-inspired design with hologram effects, cursor tracking, and expressive micro-animations.
+**Current Status:** Phases 1-4 complete. The avatar features a polished Emo-inspired design with hologram effects, voice interaction with robot voice effects (Claptrap/GLaDOS style), a premium minimal settings panel, and smart text display with adaptive positioning and alignment. Ready for Phase 5 (AI integration).
 
 ---
 
@@ -545,24 +545,52 @@ numpy>=1.24.0
 - Soft feathered glow effect
 - Animated hologram scan lines
 
-### Phase 3: Voice
-- [ ] Audio capture with sounddevice
-- [ ] Whisper.cpp STT integration
-- [ ] Piper TTS integration
-- [ ] Push-to-talk hotkey
-- [ ] Audio amplitude extraction for avatar sync
+### Phase 3: Voice ✅ COMPLETE
+- [x] Audio capture with sounddevice
+- [x] Whisper.cpp STT integration
+- [x] Piper TTS integration
+- [x] Push-to-talk hotkey (pynput)
+- [x] Audio amplitude extraction for avatar sync
 
-### Phase 4: AI
+**Implemented Features:**
+- `voice/audio.py` - AudioRecorder and AudioPlayer with real-time amplitude callbacks
+- `voice/stt.py` - WhisperSTT with pywhispercpp bindings and subprocess fallback
+- `voice/tts.py` - PiperTTS with streaming synthesis and TTSQueue for managed playback
+- `core/hotkey.py` - Global hotkey handler with push-to-talk (X key) and cancel (Escape)
+- Full integration in Controller with state management and avatar sync
+
+### Phase 4: UI Polish ✅ COMPLETE
+- [x] Settings panel (all sections)
+- [x] Response text display with streaming
+- [x] Smooth state transitions
+- [x] Error handling and user feedback
+- [x] Smart text positioning and alignment
+
+**Implemented Features:**
+- `ui/settings_window.py` - Premium minimal black/white settings panel
+  - Voice style selection (Normal, Robot, Claptrap, GLaDOS, Metallic)
+  - TTS speed, STT model selection
+  - PTT key capture
+  - Avatar size and opacity controls
+  - Draggable, frameless window with amber accents
+- `ui/text_display.py` - Pygame-based hologram text display
+  - Shared theme with avatar (amber colors, effects)
+  - Monofonto font (24px for response, 16px for user input)
+  - Typing animation with stable positioning
+  - Smart adaptive positioning:
+    - Left/right/center based on avatar screen position
+    - Text alignment matches position (left/right/center)
+    - Fixed-size container prevents shifting during animation
+  - Subtle blurred background, drop shadow, glow effects
+  - Fade in/out transitions
+- `ui/theme.py` - Shared visual constants (colors, effects, typography)
+- Full integration with controller and overlay window
+
+### Phase 5: AI
 - [ ] Ollama integration with streaming
 - [ ] Model auto-detection
 - [ ] Brave Search integration
 - [ ] Autonomous search decision logic
-
-### Phase 5: UI Polish
-- [ ] Settings panel (all sections)
-- [ ] Response text display with streaming
-- [ ] Smooth state transitions
-- [ ] Error handling and user feedback
 
 ### Phase 6: Refinement
 - [ ] Performance optimization

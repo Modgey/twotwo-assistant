@@ -29,3 +29,4 @@ class OverlayVisibility(Enum):
     HIDDEN = auto()
     MINIMIZED = auto()
 
+

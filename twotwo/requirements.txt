@@ -7,3 +7,17 @@ PySide6>=6.5.0
 pygame>=2.5.0
 numpy>=1.24.0
 
+# Voice - Audio I/O
+sounddevice>=0.4.6
+
+# Voice - Speech Recognition (choose one)
+# Option 1: pywhispercpp bindings (recommended)
+pywhispercpp>=1.2.0
+# Option 2: Use whisper.cpp subprocess (no package needed)
+
+# Global Hotkeys
+pynput>=1.7.6
+
+# Note: Piper TTS is installed as a standalone binary
+# Download from: https://github.com/rhasspy/piper/releases
+# Place in %APPDATA%/TwoTwo/piper/ or add to PATH

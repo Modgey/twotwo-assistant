@@ -12,6 +12,10 @@ from PySide6.QtWidgets import QWidget
 
 from core.state import AvatarState
 from avatar.expressions import get_expression, ExpressionParams, EyeParams, ApertureParams
+from ui.theme import (
+    AMBER_FULL, AMBER_GLOW,
+    SCANLINE_SPACING, SCANLINE_ALPHA
+)
 
 
 class AvatarRenderer(QWidget):
@@ -34,13 +38,13 @@ class AvatarRenderer(QWidget):
         self._render_size = size * self._supersample
         self._surface = pygame.Surface((self._render_size, self._render_size), pygame.SRCALPHA)
         
-        # Avatar color - amber with transparency for hologram effect
-        self._color = (255, 191, 0, 220)
-        self._glow_color = (255, 210, 100, 80)  # Softer glow
+        # Avatar color - from shared theme
+        self._color = AMBER_FULL
+        self._glow_color = AMBER_GLOW
         
-        # Hologram effect settings
-        self._scanline_spacing = 3  # Pixels between scan lines
-        self._scanline_alpha = 40   # How dark the scan lines are
+        # Hologram effect settings - from shared theme
+        self._scanline_spacing = SCANLINE_SPACING
+        self._scanline_alpha = SCANLINE_ALPHA
         self._scanline_phase = 0.0  # Animated scan line movement
         
         # Animation state

@@ -34,14 +34,15 @@ DEFAULT_CONFIG = {
         "avatar_position": {"x": 100, "y": 100},
         "avatar_size": "medium",
         "opacity": 0.85,
-        "text_display_duration": 3.0
+        "text_display_duration": 5.0
     },
     
     "voice": {
         "hotkey": "x",
-        "stt_model": "base",
+        "stt_model": "tiny",
         "tts_voice": "en_US-lessac-medium",
-        "tts_speed": 1.0,
+        "tts_speed": 1.1,
+        "voice_style": "claptrap",
         "input_device": None,
         "output_device": None
     },
@@ -149,4 +150,5 @@ def get_config() -> Config:
     if _config is None:
         _config = Config()
     return _config
+
 
