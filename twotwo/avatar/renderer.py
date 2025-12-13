@@ -469,8 +469,38 @@ class AvatarRenderer(QWidget):
         surface.blit(eye_surf, surf_rect)
     
     def _apply_hologram_effects(self, surface: pygame.Surface) -> pygame.Surface:
-        """Apply hologram scan lines and glow effect only to avatar pixels."""
+        """Apply drop shadow, hologram scan lines and glow effect."""
         w, h = surface.get_size()
+        
+        # Create drop shadow (only where avatar exists)
+        shadow_surface = pygame.Surface((w, h), pygame.SRCALPHA)
+        shadow_offset = 4
+        shadow_opacity = 50  # 0-255
+        
+        # Get alpha mask from surface to know where avatar is
+        alpha_mask = pygame.surfarray.pixels_alpha(surface).copy()
+        
+        # Create shadow by blitting a darkened, offset copy
+        for blur in range(3):  # Soft blur
+            ox = shadow_offset + blur
+            oy = shadow_offset + blur
+            
+            # Create a black silhouette of the avatar
+            shadow_layer = pygame.Surface((w, h), pygame.SRCALPHA)
+            shadow_layer_alpha = pygame.surfarray.pixels_alpha(shadow_layer)
+            
+            # Copy alpha from original, offset by shadow amount
+            src_w = min(w - ox, w)
+            src_h = min(h - oy, h)
+            if src_w > 0 and src_h > 0:
+                shadow_layer_alpha[ox:ox+src_w, oy:oy+src_h] = (
+                    alpha_mask[:src_w, :src_h].astype(float) * (shadow_opacity / 255) / (blur + 1)
+                ).astype('uint8')
+            del shadow_layer_alpha
+            
+            # Fill the shadow layer with black (keeping alpha)
+            shadow_layer.fill((0, 0, 0), special_flags=pygame.BLEND_RGB_MULT)
+            shadow_surface.blit(shadow_layer, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
         
         # Create soft feathered glow with multiple layers at different distances
         glow_surface = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -495,8 +525,9 @@ class AvatarRenderer(QWidget):
             del layer_alpha
             glow_surface.blit(layer, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
         
-        # Composite: glow behind, then main
+        # Composite: shadow behind, then glow, then main
         result = pygame.Surface((w, h), pygame.SRCALPHA)
+        result.blit(shadow_surface, (0, 0))
         result.blit(glow_surface, (0, 0))
         result.blit(surface, (0, 0))
         

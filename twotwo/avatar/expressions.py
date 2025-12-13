@@ -167,9 +167,9 @@ EXPRESSIONS = {
             rotation=0.0,
         ),
         aperture=ApertureParams(
-            openness=1.25,
-            rotation=0.2,
-            rotation_speed=0.1,
+            openness=0.85,
+            rotation=0.5,
+            rotation_speed=2.0,
             pulse_speed=0.0,    # Driven by audio
             pulse_amount=0.0,
         ),
