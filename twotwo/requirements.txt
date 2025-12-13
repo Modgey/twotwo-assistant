@@ -1,0 +1,9 @@
+# TwoTwo Dependencies
+
+# UI Framework
+PySide6>=6.5.0
+
+# Avatar Rendering
+pygame>=2.5.0
+numpy>=1.24.0
+
