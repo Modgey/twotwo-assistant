@@ -2,9 +2,11 @@
 
 ## Overview
 
-TwoTwo is a local AI assistant inspired by Jarvis from Iron Man. It features a futuristic holographic-style interface that floats on top of other windows, with real-time voice interaction and an animated avatar with an expressive "eye."
+TwoTwo is a local AI assistant inspired by Jarvis from Iron Man. It features a futuristic holographic-style interface that floats on top of other windows, with real-time voice interaction and an animated avatar with expressive eyes.
 
 **Core Philosophy:** Everything runs locally for privacy and low latency. No cloud dependencies except optional web search.
+
+**Current Status:** Phase 1 (Foundation) and Phase 2 (Avatar) are complete. The avatar features a polished Emo-inspired design with hologram effects, cursor tracking, and expressive micro-animations.
 
 ---
 
@@ -85,10 +87,8 @@ twotwo/
 │
 ├── avatar/
 │   ├── __init__.py
-│   ├── renderer.py             # Pygame avatar renderer
-│   ├── eye.py                  # Eye/pupil animation logic
-│   ├── aperture.py             # Aperture ring animation logic
-│   └── expressions.py          # Expression state definitions
+│   ├── renderer.py             # Pygame avatar renderer with hologram effects
+│   └── expressions.py          # Expression state definitions and parameters
 │
 ├── voice/
 │   ├── __init__.py
@@ -144,38 +144,52 @@ self.setAttribute(Qt.WA_ShowWithoutActivating)
 
 ### 2. Avatar Rendering
 
-**Files:** `avatar/renderer.py`, `avatar/eye.py`, `avatar/aperture.py`
+**Files:** `avatar/renderer.py`, `avatar/expressions.py`
 
 **Visual Design:**
-- Aperture-lens sphere shape (overlapping ring segments forming a circular opening)
-- Central "eye" (pupil) that can move and change shape
-- Neutral white/light gray color palette
-- Slight transparency (80-90% opacity)
-- Soft glow effect around edges (optional)
+- Emo-inspired minimal design with two expressive eyes
+- Aperture lens frame (6-blade camera aperture) surrounding the eyes
+- Amber color scheme (RGB: 255, 191, 0) with transparency
+- Hologram effects:
+  - Animated scan lines (subtle, drifting downward)
+  - Soft feathered glow around avatar
+  - Drop shadow for visibility on busy backgrounds
+- 2x supersampling for anti-aliasing (crisp edges)
+- Rendered at 144 FPS for smooth animations
 
 **Avatar States & Animations:**
 
 | State | Aperture Behavior | Eye Behavior | Trigger |
 |-------|-------------------|--------------|---------|
-| Idle | Slow, subtle breathing pulse | Gentle random look-around, occasional blink | Default state |
-| Listening | Aperture opens slightly wider | Pupil focused center, slightly dilated | Push-to-talk active |
-| Thinking | Rings rotate slowly, pulsing | Pupil contracts, looks up-right | Waiting for LLM response |
-| Speaking | Subtle pulse synced to audio amplitude | Pupil animates with speech rhythm | TTS playing |
+| Idle | Slow breathing pulse | Cursor tracking, gentle breathing, occasional double-blinks | Default state |
+| Listening | Opens wider, subtle pulse | Focused, asymmetric tilt, minimal movement | Push-to-talk active |
+| Thinking | Slow rotation, gentle pulse | Squinted, occasional eye darts, looks up-right | Waiting for LLM response |
+| Speaking | Slightly open, audio-reactive | Happy squint, bounces with speech rhythm | TTS playing |
+
+**Micro-Expressions:**
+- Breathing pulse (subtle size oscillation)
+- Double-blinks (15% chance, natural feel)
+- Asymmetric blinks (left eye leads slightly)
+- Thinking eye darts (quick glances while processing)
+- Speaking happy squint (eyes narrow slightly when talking)
+- Cursor tracking in idle (eyes follow mouse with perspective/rotation effects)
 
 **Pygame Embedding in PySide6:**
 ```python
-# Embed pygame surface in QWidget
-class AvatarWidget(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.pygame_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+# Embed pygame surface in QWidget with supersampling
+class AvatarRenderer(QWidget):
+    def __init__(self, size=200):
+        self._supersample = 2
+        self._render_size = size * self._supersample
+        self._surface = pygame.Surface((self._render_size, self._render_size), pygame.SRCALPHA)
         
     def paintEvent(self, event):
-        # Render pygame surface to QImage, then to widget
-        # Use QImage.Format_ARGB32 for transparency
+        # Render at 2x, scale down for anti-aliasing
+        # Apply hologram effects (glow, scan lines, shadow)
+        # Convert to QImage and display
 ```
 
-**Avatar Size:** ~200x200 pixels (configurable)
+**Avatar Size:** ~200x200 pixels (configurable: small/medium/large)
 
 ---
 
@@ -241,14 +255,16 @@ process = subprocess.Popen(
 **File:** `ai/llm.py`
 
 **Supported Backends:**
-1. **Ollama** (preferred) - Easy model management, REST API
-2. **llama.cpp** (fallback) - Direct integration if Ollama unavailable
+1. **Ollama** 
+2. **llama.cpp** 
+
+User can select the backend and model from the settings panel.
 
 **Ollama Integration:**
 ```python
 import requests
 
-def chat(messages, model="llama3.2:3b"):
+def chat(messages, model="gemma3:4b"):
     response = requests.post(
         "http://localhost:11434/api/chat",
         json={"model": model, "messages": messages, "stream": True},
@@ -257,11 +273,9 @@ def chat(messages, model="llama3.2:3b"):
     # Yield tokens as they arrive for streaming display
 ```
 
-**Target Models:** 4B-8B parameter models for good performance on consumer hardware
-- `llama3.2:3b`
-- `llama3.2:8b` 
-- `phi3:3b`
-- `mistral:7b`
+**Target Models:** Small models for good performance on consumer hardware
+- `gemma3:4b`
+- `gemma3:12b`
 
 #### 4.2 Model Detection
 
@@ -322,7 +336,7 @@ def brave_search(query, api_key):
 **Settings Categories:**
 
 #### General
-- Avatar position (x, y) - or "Reset to default"
+- Avatar position (top left / top right / bottom left / bottom right) - or "Reset to default"
 - Avatar size (small / medium / large)
 - Opacity slider (50% - 100%)
 
@@ -374,11 +388,11 @@ def brave_search(query, api_key):
 **File:** `ui/text_display.py`
 
 **Requirements:**
-- Show streaming text response near avatar
+- Show streaming text response next to avatar
 - Fade in/out animation
 - Auto-dismiss after TTS completes (configurable delay)
 - Semi-transparent background
-- Positioned relative to avatar (above or to the side)
+- Positioned relative to avatar (under or beside)
 
 **Behavior:**
 - Appears when response starts streaming
@@ -468,19 +482,21 @@ def brave_search(query, api_key):
 # UI
 PySide6>=6.5.0
 pygame>=2.5.0
-
-# Voice
-pywhispercpp>=1.0.0
-piper-tts>=1.0.0
-sounddevice>=0.4.6
 numpy>=1.24.0
 
-# AI
-requests>=2.31.0
+# Voice (Phase 3)
+# pywhispercpp>=1.0.0
+# piper-tts>=1.0.0
+# sounddevice>=0.4.6
 
-# System
-pynput>=1.7.6
+# AI (Phase 4)
+# requests>=2.31.0
+
+# System (Phase 3)
+# pynput>=1.7.6
 ```
+
+**Note:** Currently only Phase 1 & 2 dependencies are included. Voice and AI dependencies will be added in future phases.
 
 ### External Dependencies (must be installed separately)
 
@@ -498,19 +514,36 @@ pynput>=1.7.6
 
 ## Development Phases
 
-### Phase 1: Foundation
-- [ ] Project setup, directory structure
-- [ ] Config management system
-- [ ] Basic PySide6 transparent overlay window
-- [ ] System tray icon with quit option
+### Phase 1: Foundation ✅ COMPLETE
+- [x] Project setup, directory structure
+- [x] Config management system
+- [x] Basic PySide6 transparent overlay window
+- [x] System tray icon with quit option
 
-### Phase 2: Avatar
-- [ ] Pygame embedding in PySide6
-- [ ] Basic aperture ring rendering
-- [ ] Eye/pupil rendering
-- [ ] Idle animation loop
-- [ ] All avatar states (listening, thinking, speaking)
-- [ ] Alt+drag movement
+### Phase 2: Avatar ✅ COMPLETE
+- [x] Pygame embedding in PySide6
+- [x] Aperture lens frame rendering (6-blade design)
+- [x] Two-eye system with expressive animations
+- [x] Idle animation loop with cursor tracking
+- [x] All avatar states (listening, thinking, speaking)
+- [x] Alt+drag movement
+- [x] Hologram effects (scan lines, glow, drop shadow)
+- [x] Micro-expressions (breathing, double-blinks, eye darts)
+- [x] 2x supersampling anti-aliasing
+- [x] 144 FPS rendering
+
+**Implemented Features:**
+- Amber color scheme with transparency
+- Cursor tracking in idle state (eyes follow mouse with perspective effects)
+- Smooth state transitions with expression interpolation
+- Breathing pulse animation
+- Double-blink system (15% chance)
+- Asymmetric blinking (left eye leads)
+- Thinking state eye darts
+- Speaking state happy squint
+- Drop shadow for visibility
+- Soft feathered glow effect
+- Animated hologram scan lines
 
 ### Phase 3: Voice
 - [ ] Audio capture with sounddevice
@@ -556,7 +589,7 @@ pynput>=1.7.6
 ### CPU Considerations
 - Whisper.cpp: Uses multiple threads, brief spike during transcription
 - Piper: Lightweight, minimal CPU
-- Avatar rendering: Target 30 FPS, use dirty rect updates
+- Avatar rendering: 144 FPS with 2x supersampling, optimized pygame rendering
 - Idle: <5% CPU when not processing
 
 ---
