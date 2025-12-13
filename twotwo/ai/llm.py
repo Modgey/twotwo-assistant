@@ -14,7 +14,8 @@ from config import get_config
 class OllamaLLM:
     """Interface to Ollama for local LLM inference."""
     
-    DEFAULT_HOST = "http://localhost:11434"
+    # Use 127.0.0.1 instead of localhost to avoid Windows DNS delay!
+    DEFAULT_HOST = "http://127.0.0.1:11434"
     
     def __init__(
         self,
@@ -32,17 +33,25 @@ class OllamaLLM:
         )
         self.host = host or self.DEFAULT_HOST
         
+        # Use a session for connection pooling (reuse TCP connections)
+        self._session = requests.Session()
+        
         # Conversation history
         self._messages: list[dict] = []
         
         # Connection status
         self._available = False
         self._check_connection()
+        
+        # Keep-alive thread to prevent model unloading
+        self._keep_alive_running = False
+        self._keep_alive_thread: Optional[threading.Thread] = None
+        self._start_keep_alive()
     
     def _check_connection(self) -> bool:
         """Check if Ollama is running and accessible."""
         try:
-            response = requests.get(f"{self.host}/api/tags", timeout=2)
+            response = self._session.get(f"{self.host}/api/tags", timeout=2)
             self._available = response.status_code == 200
         except requests.RequestException:
             self._available = False
@@ -51,6 +60,42 @@ class OllamaLLM:
     def is_available(self) -> bool:
         """Check if Ollama is available."""
         return self._available
+    
+    def _start_keep_alive(self):
+        """Start background thread to keep model loaded."""
+        if not self._available:
+            return
+        
+        self._keep_alive_running = True
+        
+        def _keep_alive_loop():
+            import time
+            while self._keep_alive_running:
+                try:
+                    # Send minimal request every 20 seconds to keep model hot
+                    self._session.post(
+                        f"{self.host}/api/generate",
+                        json={
+                            "model": self.model,
+                            "prompt": ".",
+                            "stream": False,
+                            "keep_alive": "5m",  # Keep loaded for 5 minutes
+                            "options": {"num_predict": 1}
+                        },
+                        timeout=10,
+                    )
+                except Exception:
+                    pass  # Silently fail - model might not be available
+                
+                # Sleep 20 seconds before next ping
+                for _ in range(20):
+                    if not self._keep_alive_running:
+                        break
+                    time.sleep(1)
+        
+        self._keep_alive_thread = threading.Thread(target=_keep_alive_loop, daemon=True)
+        self._keep_alive_thread.start()
+        print(f"Keep-alive thread started for {self.model}")
     
     def warm_up(self):
         """Pre-warm the model to reduce first-response latency.
@@ -63,18 +108,19 @@ class OllamaLLM:
         
         def _warm():
             try:
-                # Send minimal request to load model
-                requests.post(
+                # Send minimal request to load model and keep it loaded
+                self._session.post(
                     f"{self.host}/api/generate",
                     json={
                         "model": self.model,
                         "prompt": "hi",
                         "stream": False,
+                        "keep_alive": "30m",  # Keep model loaded for 30 minutes
                         "options": {"num_predict": 1}  # Generate just 1 token
                     },
                     timeout=30,
                 )
-                print(f"LLM warmed up: {self.model}")
+                print(f"LLM warmed up: {self.model} (keep_alive: 30m)")
             except Exception as e:
                 print(f"LLM warm-up failed: {e}")
         
@@ -83,8 +129,14 @@ class OllamaLLM:
     
     def set_model(self, model: str):
         """Change the active model."""
+        # Stop old keep-alive thread
+        self._keep_alive_running = False
+        
         self.model = model
         self._config.set("ai", "model", model)
+        
+        # Restart keep-alive with new model
+        self._start_keep_alive()
     
     def set_system_prompt(self, prompt: str):
         """Update the system prompt."""
@@ -114,12 +166,13 @@ class OllamaLLM:
         messages.append({"role": "user", "content": user_message})
         
         try:
-            response = requests.post(
+            response = self._session.post(
                 f"{self.host}/api/chat",
                 json={
                     "model": self.model,
                     "messages": messages,
                     "stream": False,
+                    "keep_alive": "30m",
                 },
                 timeout=60,
             )
@@ -173,36 +226,82 @@ class OllamaLLM:
                     return
             
             # Build messages with system prompt
+            # For speed, limit history to last 4 messages (2 exchanges)
+            recent_history = self._messages[-4:] if len(self._messages) > 4 else self._messages
+            
             messages = [{"role": "system", "content": self.system_prompt}]
-            messages.extend(self._messages)
+            messages.extend(recent_history)
             messages.append({"role": "user", "content": user_message})
             
             full_response = ""
             
             try:
-                response = requests.post(
-                    f"{self.host}/api/chat",
-                    json={
+                # Count approximate tokens being sent
+                system_chars = len(self.system_prompt)
+                total_chars = sum(len(m.get("content", "")) for m in messages)
+                approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
+                print(f"[DEBUG] System prompt: {system_chars} chars, History: {len(recent_history)} msgs, Total: ~{approx_tokens} tokens")
+                
+                # Try using /api/generate for speed test (simpler than /api/chat)
+                use_generate_api = True  # Toggle for testing
+                
+                if use_generate_api:
+                    # Format as single prompt (like CLI does)
+                    prompt = f"System: {self.system_prompt}\n\n"
+                    for msg in recent_history:
+                        role = "User" if msg["role"] == "user" else "Assistant"
+                        prompt += f"{role}: {msg['content']}\n"
+                    prompt += f"User: {user_message}\nAssistant:"
+                    
+                    request_data = {
+                        "model": self.model,
+                        "prompt": prompt,
+                        "stream": True,
+                        "keep_alive": "30m",
+                    }
+                    api_endpoint = f"{self.host}/api/generate"
+                else:
+                    request_data = {
                         "model": self.model,
                         "messages": messages,
                         "stream": True,
-                    },
+                        "keep_alive": "30m",
+                    }
+                    api_endpoint = f"{self.host}/api/chat"
+                import time as _time
+                
+                t_request_start = _time.time()
+                response = self._session.post(
+                    api_endpoint,
+                    json=request_data,
                     stream=True,
                     timeout=120,
                 )
+                t_response_received = _time.time()
+                print(f"[DEBUG] HTTP response received in {(t_response_received - t_request_start)*1000:.0f}ms")
                 
                 if response.status_code != 200:
                     if on_error:
                         on_error(f"Ollama returned status {response.status_code}")
                     return
                 
+                first_chunk_logged = False
                 for line in response.iter_lines():
+                    if not first_chunk_logged:
+                        t_first_chunk = _time.time()
+                        print(f"[DEBUG] First chunk received in {(t_first_chunk - t_request_start)*1000:.0f}ms (iter_lines wait: {(t_first_chunk - t_response_received)*1000:.0f}ms)")
+                        first_chunk_logged = True
+                    
                     if not line:
                         continue
                     
                     try:
                         data = json.loads(line)
-                        content = data.get("message", {}).get("content", "")
+                        # Different response format for /api/generate vs /api/chat
+                        if use_generate_api:
+                            content = data.get("response", "")
+                        else:
+                            content = data.get("message", {}).get("content", "")
                         if content:
                             full_response += content
                             on_token(content)
@@ -258,12 +357,13 @@ class OllamaLLM:
         full_response = ""
         
         try:
-            response = requests.post(
+            response = self._session.post(
                 f"{self.host}/api/chat",
                 json={
                     "model": self.model,
                     "messages": messages,
                     "stream": True,
+                    "keep_alive": "30m",
                 },
                 stream=True,
                 timeout=120,

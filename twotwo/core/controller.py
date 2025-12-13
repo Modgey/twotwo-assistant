@@ -4,6 +4,7 @@ Main application controller that coordinates all components.
 """
 
 import threading
+import time
 from PySide6.QtCore import QObject, Slot, Signal, QTimer
 from PySide6.QtWidgets import QApplication
 
@@ -59,6 +60,18 @@ class Controller(QObject):
         self._current_response = ""  # Accumulates streaming response for display
         self._sentence_buffer = ""   # Accumulates tokens until sentence boundary
         self._speaking_started = False  # Track if TTS has started for this response
+        
+        # Performance timing
+        self._timing = {
+            "ptt_released": 0.0,
+            "stt_start": 0.0,
+            "stt_end": 0.0,
+            "llm_start": 0.0,
+            "llm_first_token": 0.0,
+            "llm_end": 0.0,
+            "tts_first_audio": 0.0,
+            "tts_end": 0.0,
+        }
         
         self._setup_components()
         self._connect_signals()
@@ -357,6 +370,9 @@ class Controller(QObject):
         if not self._recorder.is_recording():
             return
         
+        # Mark timing: user stopped speaking
+        self._timing["ptt_released"] = time.time()
+        
         # Stop recording and get audio
         audio = self._recorder.stop()
         print(f"Recording stopped. Got {len(audio)} samples")
@@ -410,7 +426,12 @@ class Controller(QObject):
             self.set_avatar_state(AvatarState.IDLE)
             return
         
+        # Mark timing: STT start
+        self._timing["stt_start"] = time.time()
+        
         def on_complete(text: str):
+            # Mark timing: STT end
+            self._timing["stt_end"] = time.time()
             # Emit signal to handle on main thread
             self.transcription_complete.emit(text)
         
@@ -428,6 +449,9 @@ class Controller(QObject):
                     self._overlay.clear_text()
                 return
             
+            # Log STT timing
+            stt_duration = self._timing["stt_end"] - self._timing["stt_start"]
+            print(f"[TIMING] STT took {stt_duration:.3f}s")
             print(f"Transcribed: {text}")
             
             # Send to LLM if available, otherwise echo
@@ -452,6 +476,10 @@ class Controller(QObject):
         self._sentence_buffer = ""
         self._speaking_started = False
         
+        # Mark timing: LLM start
+        self._timing["llm_start"] = time.time()
+        self._timing["llm_first_token"] = 0.0
+        
         def on_token(token: str):
             self.llm_token_received.emit(token)
         
@@ -472,6 +500,12 @@ class Controller(QObject):
     @Slot(str)
     def _on_llm_token_received(self, token: str):
         """Handle streaming token from LLM with sentence-level TTS."""
+        # Mark timing: first token received
+        if self._timing["llm_first_token"] == 0.0:
+            self._timing["llm_first_token"] = time.time()
+            time_to_first_token = self._timing["llm_first_token"] - self._timing["llm_start"]
+            print(f"[TIMING] LLM first token took {time_to_first_token:.3f}s")
+        
         self._current_response += token
         self._sentence_buffer += token
         
@@ -555,9 +589,12 @@ class Controller(QObject):
         if not self._tts_queue or not self._tts or not self._tts.is_available():
             return
         
-        # Mark that speaking has started (for avatar state)
+        # Mark timing: first audio sent to TTS
         if not self._speaking_started:
             self._speaking_started = True
+            self._timing["tts_first_audio"] = time.time()
+            time_to_first_audio = self._timing["tts_first_audio"] - self._timing["ptt_released"]
+            print(f"[TIMING] Time to first audio: {time_to_first_audio:.3f}s (PTT release → TTS start)")
             # Note: on_speaking_start callback in TTS will handle avatar state
         
         print(f"TTS (streaming): '{sentence[:40]}...'")
@@ -566,6 +603,10 @@ class Controller(QObject):
     @Slot(str)
     def _on_llm_response_ready(self, response: str):
         """Handle complete LLM response."""
+        # Mark timing: LLM end
+        self._timing["llm_end"] = time.time()
+        llm_total_duration = self._timing["llm_end"] - self._timing["llm_start"]
+        print(f"[TIMING] LLM total time: {llm_total_duration:.3f}s")
         print(f"LLM response complete: {response[:100]}...")
         
         # Check for search request
@@ -630,6 +671,12 @@ class Controller(QObject):
     @Slot()
     def _on_speaking_finished(self):
         """Handle speaking finished on main thread."""
+        # Mark timing: TTS end
+        self._timing["tts_end"] = time.time()
+        
+        # Print complete timing summary
+        self._print_timing_summary()
+        
         self.set_avatar_state(AvatarState.IDLE)
         
         # Hide text after a delay
@@ -642,6 +689,30 @@ class Controller(QObject):
         """Hide response text."""
         if self._overlay:
             self._overlay._hide_text()
+    
+    def _print_timing_summary(self):
+        """Print detailed timing breakdown of the interaction."""
+        t = self._timing
+        
+        # Calculate stage durations
+        stt_duration = t["stt_end"] - t["stt_start"] if t["stt_start"] > 0 else 0
+        llm_first_token = t["llm_first_token"] - t["llm_start"] if t["llm_first_token"] > 0 else 0
+        llm_total = t["llm_end"] - t["llm_start"] if t["llm_end"] > 0 else 0
+        time_to_first_audio = t["tts_first_audio"] - t["ptt_released"] if t["tts_first_audio"] > 0 else 0
+        tts_duration = t["tts_end"] - t["tts_first_audio"] if t["tts_end"] > 0 and t["tts_first_audio"] > 0 else 0
+        total_duration = t["tts_end"] - t["ptt_released"] if t["tts_end"] > 0 else 0
+        
+        print("\n" + "="*60)
+        print("TIMING SUMMARY")
+        print("="*60)
+        print(f"STT Processing:           {stt_duration:7.3f}s")
+        print(f"LLM First Token:          {llm_first_token:7.3f}s")
+        print(f"LLM Total (streaming):    {llm_total:7.3f}s")
+        print(f"Time to First Audio:      {time_to_first_audio:7.3f}s ⚡ (KEY METRIC)")
+        print(f"TTS Playback Duration:    {tts_duration:7.3f}s")
+        print("-"*60)
+        print(f"TOTAL (PTT → Speech End): {total_duration:7.3f}s")
+        print("="*60 + "\n")
     
     def _cleanup(self):
         """Clean up resources before shutdown."""
