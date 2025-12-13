@@ -6,7 +6,7 @@ TwoTwo is a local AI assistant inspired by Jarvis from Iron Man. It features a f
 
 **Core Philosophy:** Everything runs locally for privacy and low latency. No cloud dependencies except optional web search.
 
-**Current Status:** Phases 1-4 complete. The avatar features a polished Emo-inspired design with hologram effects, voice interaction with robot voice effects (Claptrap/GLaDOS style), a premium minimal settings panel, and smart text display with adaptive positioning and alignment. Ready for Phase 5 (AI integration).
+**Current Status:** Phases 1-5 complete. Full AI integration with Ollama, streaming TTS with seamless sentence playback, optimized real-time performance, and tabbed settings UI. The system features continuous audio streaming, aggressive sentence chunking for low latency, LLM pre-warming, and model persistence.
 
 ---
 
@@ -595,17 +595,38 @@ numpy>=1.24.0
 - `ui/theme.py` - Shared visual constants (colors, effects, typography)
 - Full integration with controller and overlay window
 
-### Phase 5: AI
-- [ ] Ollama integration with streaming
-- [ ] Model auto-detection
-- [ ] Brave Search integration
-- [ ] Autonomous search decision logic
+### Phase 5: AI ✅ COMPLETE
+- [x] Ollama integration with streaming
+- [x] Model auto-detection and auto-start
+- [x] Brave Search integration
+- [x] Autonomous search decision logic
+- [x] Sentence-level streaming TTS for real-time response
+- [x] LLM pre-warming for reduced latency
+- [x] Model persistence across sessions
+- [x] Tabbed settings UI with AI configuration
 
-### Phase 6: Refinement
-- [ ] Performance optimization
+**Implemented Features:**
+- `ai/llm.py` - OllamaLLM with streaming chat, conversation history, and pre-warming
+- `ai/model_manager.py` - Auto-detection of Ollama models, auto-start functionality, best model selection
+- `ai/search.py` - Brave Search API integration with autonomous search decision logic
+- Continuous streaming TTS queue - seamless sentence playback without gaps
+- Aggressive sentence chunking - starts speaking after 8-40 chars for low latency
+- Settings UI redesign - tabbed interface (Voice/AI/Display) with larger, more usable controls
+
+**Recent Performance Improvements:**
+- Fixed critical TTS audio buffer bug causing exponential slowdown after multiple uses
+- Implemented continuous streaming architecture - audio stream stays open for seamless playback
+- Sentence-level streaming with 4-tier chunking strategy (punctuation → newlines → pauses → length)
+- LLM model pre-warming on startup and model switch to eliminate cold start latency
+- Optimized sentence extraction thresholds (8-40 chars) for faster speech initiation
+- Model persistence - selected model saved and restored on restart
+
+### Phase 6: Refinement (In Progress)
+- [x] Performance optimization (TTS buffer, streaming, chunking)
+- [x] Real-time latency improvements
 - [ ] Edge case handling
 - [ ] User testing and feedback
-- [ ] Documentation
+- [x] Documentation (project plan updated)
 
 ---
 
@@ -620,8 +641,16 @@ numpy>=1.24.0
 
 ### Latency Targets
 - STT processing: <2 seconds for typical utterance
-- LLM first token: <1 second
-- TTS first audio: <500ms
+- LLM first token: <1 second (with pre-warming: <0.3s)
+- TTS first audio: <200ms (sentence-level streaming)
+- Time to first speech: <1.5s from LLM first token (aggressive chunking)
+
+### Performance Optimizations (Latest)
+- **TTS Audio Buffer**: Fixed O(n²) performance issue - now O(1) per callback
+- **Continuous Streaming**: Single audio stream for multiple sentences (no gaps)
+- **Sentence Chunking**: Aggressive thresholds (8-40 chars) for immediate speech start
+- **LLM Pre-warming**: Model loaded on startup and model switch to eliminate cold start
+- **Queue-based Audio**: Replaced list concatenation with efficient queue system
 
 ### CPU Considerations
 - Whisper.cpp: Uses multiple threads, brief spike during transcription
