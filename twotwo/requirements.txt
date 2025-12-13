@@ -18,6 +18,14 @@ pywhispercpp>=1.2.0
 # Global Hotkeys
 pynput>=1.7.6
 
+# AI - HTTP requests for Ollama and Brave Search
+requests>=2.31.0
+
 # Note: Piper TTS is installed as a standalone binary
 # Download from: https://github.com/rhasspy/piper/releases
 # Place in %APPDATA%/TwoTwo/piper/ or add to PATH
+
+# Note: Ollama must be running for AI features
+# Install from: https://ollama.ai
+# Start with: ollama serve
+# Pull a model: ollama pull llama3.2:3b

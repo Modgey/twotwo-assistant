@@ -18,8 +18,12 @@ from ui.settings_window import SettingsWindow
 class Controller(QObject):
     """Main application controller."""
     
-    # Signals for voice processing
+    # Signals for voice processing (for thread safety)
     transcription_complete = Signal(str)
+    speaking_finished = Signal()
+    llm_response_ready = Signal(str)  # Full response from LLM
+    llm_token_received = Signal(str)  # Streaming token from LLM
+    llm_error = Signal(str)  # LLM error
     
     def __init__(self, app: QApplication):
         super().__init__()
@@ -44,9 +48,15 @@ class Controller(QObject):
         self._tts_queue = None
         self._player = None
         
+        # AI components
+        self._llm = None
+        self._search_handler = None
+        self._ai_enabled = False
+        
         # Voice state
         self._voice_enabled = False
         self._processing_lock = threading.Lock()
+        self._current_response = ""  # Accumulates streaming response
         
         self._setup_components()
         self._connect_signals()
@@ -69,6 +79,9 @@ class Controller(QObject):
         
         # Setup voice components
         self._setup_voice()
+        
+        # Setup AI components
+        self._setup_ai()
     
     def _setup_voice(self):
         """Initialize voice components."""
@@ -132,6 +145,71 @@ class Controller(QObject):
             print(f"Voice initialization error: {e}")
             self._voice_enabled = False
     
+    def _setup_ai(self):
+        """Initialize AI components (LLM and search)."""
+        try:
+            from ai.llm import OllamaLLM
+            from ai.model_manager import get_model_manager
+            from ai.search import get_search_handler
+            
+            # Get model manager and ensure Ollama is running
+            manager = get_model_manager()
+            
+            if not manager.is_ollama_installed():
+                print("Ollama not installed. Download from https://ollama.ai")
+                self._ai_enabled = False
+                return
+            
+            # Auto-start Ollama if not running
+            if not manager.ensure_running(auto_start=True):
+                print("Could not start Ollama")
+                self._ai_enabled = False
+                return
+            
+            # Get configured model preference
+            preferred_model = self._config.get("ai", "model", default="llama3.2:3b")
+            
+            # Find best available model
+            best_model = manager.get_best_model(preferred=preferred_model)
+            
+            if not best_model:
+                print("No Ollama models found. Pull one with: ollama pull llama3.2:3b")
+                self._ai_enabled = False
+                return
+            
+            # Use the detected model (update config if different)
+            if best_model != preferred_model:
+                print(f"Using available model: {best_model} (configured: {preferred_model})")
+                self._config.set("ai", "model", best_model)
+            
+            # Initialize LLM with detected model
+            self._llm = OllamaLLM(model=best_model)
+            
+            if self._llm.is_available():
+                print(f"AI initialized with model: {self._llm.model}")
+                self._ai_enabled = True
+            else:
+                print("Warning: Ollama connection failed")
+                self._ai_enabled = False
+                return
+            
+            # Initialize search handler
+            self._search_handler = get_search_handler()
+            
+            # Add search capability to system prompt if enabled
+            if self._search_handler.is_enabled():
+                base_prompt = self._llm.system_prompt
+                search_addition = self._search_handler.get_search_prompt()
+                self._llm.system_prompt = base_prompt + search_addition
+                print("Web search enabled")
+            
+        except ImportError as e:
+            print(f"AI components not available: {e}")
+            self._ai_enabled = False
+        except Exception as e:
+            print(f"AI initialization error: {e}")
+            self._ai_enabled = False
+    
     def _connect_signals(self):
         """Connect signals between components."""
         # Tray icon signals
@@ -146,6 +224,10 @@ class Controller(QObject):
         
         # Internal signals
         self.transcription_complete.connect(self._on_transcription_complete)
+        self.speaking_finished.connect(self._on_speaking_finished)
+        self.llm_response_ready.connect(self._on_llm_response_ready)
+        self.llm_token_received.connect(self._on_llm_token_received)
+        self.llm_error.connect(self._on_llm_error)
     
     @Slot()
     def _on_quit_requested(self):
@@ -199,6 +281,15 @@ class Controller(QObject):
             self._overlay.set_opacity(value)
         elif key == "avatar_size":
             print(f"Avatar size change requires restart to take effect")
+        elif key == "ai_model" and self._llm:
+            self._llm.set_model(value)
+            print(f"Switched to AI model: {value}")
+        elif key == "personality" and self._llm:
+            self._llm.set_system_prompt(value)
+            print("Updated AI personality")
+        elif key == "enable_search" and self._search_handler:
+            self._search_handler.set_enabled(value)
+            print(f"Web search {'enabled' if value else 'disabled'}")
     
     @Slot()
     def _on_toggle_visibility(self):
@@ -334,21 +425,86 @@ class Controller(QObject):
             
             print(f"Transcribed: {text}")
             
-            # For now, just echo back the text via TTS
-            # In Phase 4, this will go to the LLM
-            if self._tts_queue and self._tts and self._tts.is_available():
+            # Send to LLM if available, otherwise echo
+            if self._ai_enabled and self._llm:
+                self._send_to_llm(text)
+            elif self._tts_queue and self._tts and self._tts.is_available():
+                # Fallback: echo back if no LLM
                 response = f"You said: {text}"
-                
-                # Show AI response text next to avatar
                 if self._overlay:
                     self._overlay.show_text(response)
-                
                 self._tts_queue.speak(response)
             else:
-                print("TTS not available, returning to idle")
+                print("Neither AI nor TTS available, returning to idle")
                 self.set_avatar_state(AvatarState.IDLE)
         except Exception as e:
             print(f"Error handling transcription: {e}")
+            self.set_avatar_state(AvatarState.IDLE)
+    
+    def _send_to_llm(self, user_message: str):
+        """Send message to LLM with streaming."""
+        self._current_response = ""
+        
+        def on_token(token: str):
+            self.llm_token_received.emit(token)
+        
+        def on_complete(full_response: str):
+            self.llm_response_ready.emit(full_response)
+        
+        def on_error(error: str):
+            self.llm_error.emit(error)
+        
+        print(f"Sending to LLM: {user_message[:50]}...")
+        self._llm.chat_stream(
+            user_message,
+            on_token=on_token,
+            on_complete=on_complete,
+            on_error=on_error,
+        )
+    
+    @Slot(str)
+    def _on_llm_token_received(self, token: str):
+        """Handle streaming token from LLM."""
+        self._current_response += token
+        # Update display with accumulated response
+        if self._overlay:
+            self._overlay.show_text(self._current_response)
+    
+    @Slot(str)
+    def _on_llm_response_ready(self, response: str):
+        """Handle complete LLM response."""
+        print(f"LLM response: {response[:100]}...")
+        
+        # Check for search request
+        if self._search_handler and self._search_handler.is_enabled():
+            query = self._search_handler.extract_search_query(response)
+            if query:
+                print(f"Search requested: {query}")
+                # Perform search and send results back to LLM
+                results = self._search_handler.handle_search(query)
+                follow_up = f"Search results for '{query}':\n\n{results}\n\nNow provide your response."
+                self._send_to_llm(follow_up)
+                return
+        
+        # Speak the response
+        if self._tts_queue and self._tts and self._tts.is_available():
+            self._tts_queue.speak(response)
+        else:
+            print("TTS not available")
+            self.set_avatar_state(AvatarState.IDLE)
+    
+    @Slot(str)
+    def _on_llm_error(self, error: str):
+        """Handle LLM error."""
+        print(f"LLM error: {error}")
+        error_msg = f"Sorry, I encountered an error: {error}"
+        
+        if self._overlay:
+            self._overlay.show_text(error_msg)
+        
+        if self._tts_queue and self._tts and self._tts.is_available():
+            self._tts_queue.speak("Sorry, I encountered an error.")
+        else:
             self.set_avatar_state(AvatarState.IDLE)
     
     def _on_recording_amplitude(self, amplitude: float):
@@ -365,13 +521,18 @@ class Controller(QObject):
         self.set_avatar_state(AvatarState.SPEAKING)
     
     def _on_speaking_end(self):
-        """Handle TTS speaking end."""
+        """Handle TTS speaking end (called from background thread)."""
+        # Emit signal to handle on main Qt thread
+        self.speaking_finished.emit()
+    
+    @Slot()
+    def _on_speaking_finished(self):
+        """Handle speaking finished on main thread."""
         self.set_avatar_state(AvatarState.IDLE)
         
         # Hide text after a delay
         if self._overlay:
             duration = self._config.get("ui", "text_display_duration", default=5.0)
-            from PySide6.QtCore import QTimer
             # Hide both user text and response text after delay
             QTimer.singleShot(int(duration * 1000), self._hide_all_text)
     
@@ -418,6 +579,12 @@ class Controller(QObject):
             
             ptt_key = self._config.get("voice", "hotkey", default="x").upper()
             print(f"Voice enabled. Hold '{ptt_key}' to talk.")
+        
+        # Print AI status
+        if self._ai_enabled and self._llm:
+            print(f"AI ready with model: {self._llm.model}")
+        else:
+            print("AI not available - start Ollama with: ollama serve")
     
     @property
     def app_state(self) -> AppState:
