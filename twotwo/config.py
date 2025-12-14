@@ -51,7 +51,7 @@ DEFAULT_CONFIG = {
         "backend": "ollama",
         "model": "gemma3:4b",
         "personality": "You are TwoTwo, a helpful AI assistant with a calm and professional demeanor. You provide concise, accurate responses.",
-        "brave_api_key": "",
+        "brave_api_key": "BSAdggG6sl88nwOsFEc44t1UHFmNE8V",
         "enable_search": True
     }
 }

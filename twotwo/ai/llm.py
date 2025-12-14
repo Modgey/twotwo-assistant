@@ -5,6 +5,7 @@ Ollama integration with streaming support for local AI inference.
 
 import json
 import threading
+from datetime import datetime
 from typing import Callable, Generator, Optional
 import requests
 
@@ -147,6 +148,43 @@ class OllamaLLM:
         """Clear conversation history."""
         self._messages = []
     
+    def get_full_system_prompt(self) -> str:
+        """Get the complete system prompt with current date/time/location context.
+        
+        This is called fresh for each request to ensure the time is always current.
+        """
+        now = datetime.now()
+        date_str = now.strftime("%A, %B %d, %Y")
+        time_str = now.strftime("%I:%M %p")
+        
+        # Get cached location (computed once)
+        if not hasattr(self, '_cached_location'):
+            self._cached_location = self._get_location()
+        
+        location_line = f"Location: {self._cached_location}\n" if self._cached_location else ""
+        
+        return f"""Current date: {date_str}
+Current time: {time_str}
+{location_line}
+{self.system_prompt}"""
+    
+    def _get_location(self) -> str:
+        """Get location from config or infer from timezone (cached)."""
+        import time as time_module
+        
+        location = self._config.get("user", "location", default="")
+        if location:
+            return location
+        
+        try:
+            tz_name = time_module.tzname[0] if time_module.tzname else ""
+            if "Standard Time" in tz_name or "Daylight Time" in tz_name:
+                return tz_name.replace(" Standard Time", "").replace(" Daylight Time", "")
+            tz_map = {"IST": "Israel", "EST": "Eastern US", "PST": "Pacific US", "GMT": "UK"}
+            return tz_map.get(tz_name, "")
+        except:
+            return ""
+    
     def chat(self, user_message: str) -> str:
         """Send a message and get a complete response (blocking).
         
@@ -160,8 +198,8 @@ class OllamaLLM:
             if not self._check_connection():
                 return "Error: Ollama is not running. Please start Ollama first."
         
-        # Build messages with system prompt
-        messages = [{"role": "system", "content": self.system_prompt}]
+        # Build messages with system prompt (includes current date/time)
+        messages = [{"role": "system", "content": self.get_full_system_prompt()}]
         messages.extend(self._messages)
         messages.append({"role": "user", "content": user_message})
         
@@ -225,11 +263,11 @@ class OllamaLLM:
                         on_error(error_msg)
                     return
             
-            # Build messages with system prompt
+            # Build messages with system prompt (includes current date/time)
             # For speed, limit history to last 4 messages (2 exchanges)
             recent_history = self._messages[-4:] if len(self._messages) > 4 else self._messages
             
-            messages = [{"role": "system", "content": self.system_prompt}]
+            messages = [{"role": "system", "content": self.get_full_system_prompt()}]
             messages.extend(recent_history)
             messages.append({"role": "user", "content": user_message})
             

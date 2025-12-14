@@ -51,7 +51,7 @@ class Controller(QObject):
         
         # AI components
         self._llm = None
-        self._search_handler = None
+        self._tool_manager = None
         self._ai_enabled = False
         
         # Voice state
@@ -161,11 +161,11 @@ class Controller(QObject):
             self._voice_enabled = False
     
     def _setup_ai(self):
-        """Initialize AI components (LLM and search)."""
+        """Initialize AI components (LLM and tools)."""
         try:
             from ai.llm import OllamaLLM
             from ai.model_manager import get_model_manager
-            from ai.search import get_search_handler
+            from ai.tools import get_tool_manager
             
             # Get model manager and ensure Ollama is running
             manager = get_model_manager()
@@ -210,15 +210,15 @@ class Controller(QObject):
                 self._ai_enabled = False
                 return
             
-            # Initialize search handler
-            self._search_handler = get_search_handler()
+            # Initialize tool manager
+            self._tool_manager = get_tool_manager()
             
-            # Add search capability to system prompt if enabled
-            if self._search_handler.is_enabled():
-                base_prompt = self._llm.system_prompt
-                search_addition = self._search_handler.get_search_prompt()
-                self._llm.system_prompt = base_prompt + search_addition
-                print("Web search enabled")
+            # Add tools to system prompt
+            tools_prompt = self._tool_manager.get_system_prompt_addition()
+            if tools_prompt:
+                self._llm.system_prompt = self._llm.system_prompt + tools_prompt
+                enabled_tools = [t.name for t in self._tool_manager.get_enabled_tools()]
+                print(f"Tools enabled: {', '.join(enabled_tools)}")
             
         except ImportError as e:
             print(f"AI components not available: {e}")
@@ -305,9 +305,13 @@ class Controller(QObject):
         elif key == "personality" and self._llm:
             self._llm.set_system_prompt(value)
             print("Updated AI personality")
-        elif key == "enable_search" and self._search_handler:
-            self._search_handler.set_enabled(value)
-            print(f"Web search {'enabled' if value else 'disabled'}")
+        elif key.startswith("enable_") and self._tool_manager:
+            # Handle tool enable/disable (e.g., enable_search)
+            tool_name = key.replace("enable_", "")
+            tool = self._tool_manager.get_tool(tool_name)
+            if tool:
+                tool.set_enabled(value)
+                print(f"Tool '{tool_name}' {'enabled' if value else 'disabled'}")
     
     @Slot()
     def _on_toggle_visibility(self):
@@ -480,6 +484,8 @@ class Controller(QObject):
         self._timing["llm_start"] = time.time()
         self._timing["llm_first_token"] = 0.0
         
+        # Send message directly to LLM - AI will decide if it needs to search
+        
         def on_token(token: str):
             self.llm_token_received.emit(token)
         
@@ -509,9 +515,13 @@ class Controller(QObject):
         self._current_response += token
         self._sentence_buffer += token
         
-        # Update display with accumulated response
+        # Update display with accumulated response, hiding any tool tags
         if self._overlay:
-            self._overlay.show_text(self._current_response)
+            if self._tool_manager:
+                display_text = self._tool_manager.clean_tool_tags(self._current_response)
+            else:
+                display_text = self._current_response
+            self._overlay.show_text(display_text.strip())
         
         # Check for sentence boundary to start speaking immediately
         sentence = self._extract_complete_sentence()
@@ -583,7 +593,11 @@ class Controller(QObject):
     
     def _speak_sentence(self, sentence: str):
         """Send a sentence to TTS immediately."""
-        if not sentence.strip():
+        # Filter out any tool tags before speaking
+        if self._tool_manager:
+            sentence = self._tool_manager.clean_tool_tags(sentence)
+        
+        if not sentence:
             return
         
         if not self._tts_queue or not self._tts or not self._tts.is_available():
@@ -609,16 +623,54 @@ class Controller(QObject):
         print(f"[TIMING] LLM total time: {llm_total_duration:.3f}s")
         print(f"LLM response complete: {response[:100]}...")
         
-        # Check for search request
-        if self._search_handler and self._search_handler.is_enabled():
-            query = self._search_handler.extract_search_query(response)
-            if query:
-                print(f"Search requested: {query}")
-                # Perform search and send results back to LLM
-                results = self._search_handler.handle_search(query)
-                follow_up = f"Search results for '{query}':\n\n{results}\n\nNow provide your response."
-                self._send_to_llm(follow_up)
-                return
+        # Check for tool calls and process
+        if self._tool_manager:
+            tool_call = self._tool_manager.extract_tool_call(response)
+            if tool_call:
+                tool_name, query = tool_call
+                print(f"Tool requested: {tool_name} - {query}")
+                
+                # Speak a random varied acknowledgement
+                import random
+                acknowledgements = [
+                    "One sec.",
+                    "Let me check.",
+                    "Checking.",
+                    "Looking that up.",
+                    "Give me a moment.",
+                    "One moment.",
+                ]
+                ack = random.choice(acknowledgements)
+                print(f"Speaking acknowledgement: '{ack}'")
+                if self._tts_queue and self._tts and self._tts.is_available():
+                    self._tts_queue.speak(ack)
+                
+                # Execute the tool
+                result = self._tool_manager.execute_tool(tool_name, query)
+                
+                if result.success:
+                    print(f"Search executed successfully. Results received.")
+                    
+                    # Send tool results back to LLM - tell it NOT to repeat acknowledgement
+                    follow_up_prompt = f"""Here are the search results:
+
+{result.content}
+
+Answer naturally with this information. Start directly with the answer - do NOT say things like 'Let me check' or 'Here's what I found'."""
+                    
+                    # Make a follow-up LLM call with the tool results
+                    self._send_followup_with_results(follow_up_prompt)
+                    return  # Wait for follow-up response
+                else:
+                    print(f"Tool error: {result.error}")
+        
+        # Clean any tool tags from response
+        if self._tool_manager:
+            response = self._tool_manager.clean_tool_tags(response)
+        
+        # Update display with cleaned response
+        if self._overlay and response:
+            self._overlay.show_text(response)
         
         # Speak any remaining text in the sentence buffer
         remaining = self._sentence_buffer.strip()
@@ -635,6 +687,33 @@ class Controller(QObject):
         if not self._tts_queue or not self._tts or not self._tts.is_available():
             print("TTS not available")
             self.set_avatar_state(AvatarState.IDLE)
+    
+    def _send_followup_with_results(self, follow_up_prompt: str):
+        """Send tool results to LLM for a follow-up response."""
+        if not self._llm:
+            return
+        
+        # Reset for new response
+        self._current_response = ""
+        self._sentence_buffer = ""
+        self._speaking_started = False
+        
+        def on_token(token: str):
+            self.llm_token_received.emit(token)
+        
+        def on_complete(full_response: str):
+            self.llm_response_ready.emit(full_response)
+        
+        def on_error(error: str):
+            self.llm_error.emit(error)
+        
+        print(f"Sending follow-up to LLM with tool results...")
+        self._llm.chat_stream(
+            follow_up_prompt,
+            on_token=on_token,
+            on_complete=on_complete,
+            on_error=on_error,
+        )
     
     @Slot(str)
     def _on_llm_error(self, error: str):
