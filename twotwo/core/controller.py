@@ -181,24 +181,26 @@ class Controller(QObject):
                 self._ai_enabled = False
                 return
             
-            # Get configured model preference
-            preferred_model = self._config.get("ai", "model", default="llama3.2:3b")
+            # Get configured model - just use what's in the config (persisted from last use)
+            configured_model = self._config.get("ai", "model", default="llama3.2:3b")
             
-            # Find best available model
-            best_model = manager.get_best_model(preferred=preferred_model)
+            # Check if configured model is available
+            available_models = manager.get_model_names(refresh=True)
             
-            if not best_model:
+            if not available_models:
                 print("No Ollama models found. Pull one with: ollama pull llama3.2:3b")
                 self._ai_enabled = False
                 return
             
-            # Use the detected model (update config if different)
-            if best_model != preferred_model:
-                print(f"Using available model: {best_model} (configured: {preferred_model})")
-                self._config.set("ai", "model", best_model)
+            if configured_model not in available_models:
+                print(f"Warning: Configured model '{configured_model}' not found.")
+                print(f"Available models: {', '.join(available_models[:5])}")
+                print(f"Using first available: {available_models[0]}")
+                configured_model = available_models[0]
+                # Note: We don't save this to config - user's preference is preserved
             
-            # Initialize LLM with detected model
-            self._llm = OllamaLLM(model=best_model)
+            # Initialize LLM with the configured model
+            self._llm = OllamaLLM(model=configured_model)
             
             if self._llm.is_available():
                 print(f"AI initialized with model: {self._llm.model}")
@@ -213,12 +215,21 @@ class Controller(QObject):
             # Initialize tool manager
             self._tool_manager = get_tool_manager()
             
-            # Add tools to system prompt
+            # Add tools to system prompt template
             tools_prompt = self._tool_manager.get_system_prompt_addition()
             if tools_prompt:
-                self._llm.system_prompt = self._llm.system_prompt + tools_prompt
+                self._llm._tools_prompt = tools_prompt.strip()
                 enabled_tools = [t.name for t in self._tool_manager.get_enabled_tools()]
                 print(f"Tools enabled: {', '.join(enabled_tools)}")
+            
+            # Initialize search intent detector (uses tiny model for classification)
+            try:
+                from ai.search_intent import get_search_intent_detector
+                detector = get_search_intent_detector()
+                if detector.is_available():
+                    print("Smart search intent detection enabled")
+            except ImportError:
+                pass
             
         except ImportError as e:
             print(f"AI components not available: {e}")
@@ -300,8 +311,9 @@ class Controller(QObject):
             print(f"Avatar size change requires restart to take effect")
         elif key == "ai_model" and self._llm:
             self._llm.set_model(value)
+            self._config.set("ai", "model", value)  # Ensure it's saved to config
             self._llm.warm_up()  # Pre-warm the new model
-            print(f"Switched to AI model: {value}")
+            print(f"Switched to AI model: {value} (saved to config)")
         elif key == "personality" and self._llm:
             self._llm.set_system_prompt(value)
             print("Updated AI personality")
@@ -475,16 +487,24 @@ class Controller(QObject):
             self.set_avatar_state(AvatarState.IDLE)
     
     def _send_to_llm(self, user_message: str):
-        """Send message to LLM with streaming."""
+        """Send message to LLM with streaming.
+        
+        Runs search intent detection in PARALLEL - no added latency.
+        If search results come back, they're used in a follow-up if needed.
+        """
         self._current_response = ""
         self._sentence_buffer = ""
         self._speaking_started = False
+        self._pending_search_results = None  # For parallel search
+        self._search_detected = False  # Reset search detection flag
         
         # Mark timing: LLM start
         self._timing["llm_start"] = time.time()
         self._timing["llm_first_token"] = 0.0
         
-        # Send message directly to LLM - AI will decide if it needs to search
+        # Start parallel search intent detection (non-blocking)
+        if self._tool_manager:
+            self._start_parallel_search(user_message)
         
         def on_token(token: str):
             self.llm_token_received.emit(token)
@@ -495,6 +515,7 @@ class Controller(QObject):
         def on_error(error: str):
             self.llm_error.emit(error)
         
+        # Start main LLM immediately (no delay from search)
         print(f"Sending to LLM: {user_message[:50]}...")
         self._llm.chat_stream(
             user_message,
@@ -502,6 +523,32 @@ class Controller(QObject):
             on_complete=on_complete,
             on_error=on_error,
         )
+    
+    def _start_parallel_search(self, query: str):
+        """Run search intent detection and search in background thread."""
+        import threading
+        
+        def search_worker():
+            try:
+                from ai.search_intent import get_search_intent_detector
+                detector = get_search_intent_detector()
+                
+                if not detector.is_available():
+                    return
+                
+                if detector.needs_search(query):
+                    print(f"[Parallel] Search needed for: {query[:40]}...")
+                    search_tool = self._tool_manager.get_tool("search")
+                    if search_tool and search_tool.is_enabled():
+                        result = search_tool.execute(query)
+                        if result.success:
+                            self._pending_search_results = result.content
+                            print(f"[Parallel] Search results ready")
+            except Exception as e:
+                print(f"[Parallel] Search error: {e}")
+        
+        thread = threading.Thread(target=search_worker, daemon=True)
+        thread.start()
     
     @Slot(str)
     def _on_llm_token_received(self, token: str):
@@ -515,23 +562,34 @@ class Controller(QObject):
         self._current_response += token
         self._sentence_buffer += token
         
-        # Update display with accumulated response, hiding any tool tags
-        if self._overlay:
-            if self._tool_manager:
-                display_text = self._tool_manager.clean_tool_tags(self._current_response)
-            else:
-                display_text = self._current_response
-            self._overlay.show_text(display_text.strip())
+        # Detect search tag early - stop TTS if we see it
+        if '<search>' in self._current_response and not getattr(self, '_search_detected', False):
+            self._search_detected = True
+            print("[Stream] Search tag detected - clearing TTS, searching...")
+            # Clear the sentence buffer so we don't speak the content after <search>
+            self._sentence_buffer = ""
+            # Clear pending TTS and speak acknowledgement
+            if self._tts_queue:
+                self._tts_queue.clear_queue()
+            # Speak "Checking..." - this will also update the UI
+            self._speak_sentence("Checking...")
+            return
         
-        # Check for sentence boundary to start speaking immediately
+        # If search was detected, just accumulate but don't speak
+        if getattr(self, '_search_detected', False):
+            return
+        
+        # Check for sentence boundary to start speaking (UI updates in _speak_sentence)
         sentence = self._extract_complete_sentence()
         if sentence:
             self._speak_sentence(sentence)
     
     def _extract_complete_sentence(self) -> str | None:
-        """Extract a speakable chunk from the buffer - optimized for low latency.
+        """Extract a speakable chunk from the buffer.
         
-        Aggressively extracts chunks to start speaking as soon as possible.
+        Uses 'fast start' strategy:
+        - FIRST chunk: Aggressive small thresholds to start speaking ASAP
+        - SUBSEQUENT chunks: Larger thresholds for smooth, natural flow
         """
         import re
         
@@ -539,11 +597,62 @@ class Controller(QObject):
         if not buffer:
             return None
         
-        # Very short minimum - speak almost anything meaningful
-        MIN_SPEAK_LEN = 8
+        # === FAST START: Use smaller thresholds for first chunk ===
+        # This minimizes time-to-first-audio while parallel synthesis
+        # handles smooth flow for subsequent chunks
+        if not self._speaking_started:
+            MIN_LEN = 12  # Very short - speak almost anything
+            
+            # Sentence end - immediate
+            sentence_end = re.search(r'[.!?](?:\s|$)', buffer)
+            if sentence_end:
+                end_pos = sentence_end.start() + 1
+                sentence = buffer[:end_pos].strip()
+                if len(sentence) >= MIN_LEN:
+                    self._sentence_buffer = buffer[end_pos:].lstrip()
+                    return sentence
+            
+            # Newline - immediate
+            newline_match = re.search(r'\n', buffer)
+            if newline_match and newline_match.start() >= MIN_LEN:
+                end_pos = newline_match.start()
+                sentence = buffer[:end_pos].strip()
+                if sentence:
+                    self._sentence_buffer = buffer[end_pos:].lstrip()
+                    return sentence
+            
+            # Comma/pause - after just 20 chars
+            if len(buffer) > 20:
+                pause_match = re.search(r'[,;:\-–—](?:\s|$)', buffer)
+                if pause_match and pause_match.start() >= 12:
+                    end_pos = pause_match.start() + 1
+                    sentence = buffer[:end_pos].strip()
+                    self._sentence_buffer = buffer[end_pos:].lstrip()
+                    return sentence
+            
+            # Word boundary - after 35 chars
+            if len(buffer) > 35:
+                space_match = re.search(r'\s', buffer[20:])
+                if space_match:
+                    end_pos = 20 + space_match.start()
+                    sentence = buffer[:end_pos].strip()
+                    self._sentence_buffer = buffer[end_pos:].lstrip()
+                    return sentence
+            
+            # Hard cutoff at 45 chars
+            if len(buffer) > 45:
+                sentence = buffer[:35].strip()
+                self._sentence_buffer = buffer[35:].lstrip()
+                return sentence
+            
+            return None
         
-        # === Strategy 1: Sentence-ending punctuation (highest priority) ===
-        # Speak immediately when we hit .!?
+        # === SMOOTH FLOW: Larger thresholds for subsequent chunks ===
+        # Parallel synthesis is already pre-buffering, so we can wait for
+        # more natural break points
+        MIN_SPEAK_LEN = 15
+        
+        # Sentence-ending punctuation (highest priority)
         sentence_end = re.search(r'[.!?](?:\s|$)', buffer)
         if sentence_end:
             end_pos = sentence_end.start() + 1
@@ -552,7 +661,7 @@ class Controller(QObject):
                 self._sentence_buffer = buffer[end_pos:].lstrip()
                 return sentence
         
-        # === Strategy 2: Newlines (immediate) ===
+        # Newlines
         newline_match = re.search(r'\n', buffer)
         if newline_match and newline_match.start() >= MIN_SPEAK_LEN:
             end_pos = newline_match.start()
@@ -561,41 +670,88 @@ class Controller(QObject):
                 self._sentence_buffer = buffer[end_pos:].lstrip()
                 return sentence
         
-        # === Strategy 3: Pause punctuation (aggressive) ===
-        # Speak at commas/colons after just 20 chars
-        if len(buffer) > 25:
+        # Pause punctuation - wait for 45+ chars
+        if len(buffer) > 45:
             pause_match = re.search(r'[,;:\-–—](?:\s|$)', buffer)
-            if pause_match and pause_match.start() >= 15:
+            if pause_match and pause_match.start() >= 25:
                 end_pos = pause_match.start() + 1
                 sentence = buffer[:end_pos].strip()
                 self._sentence_buffer = buffer[end_pos:].lstrip()
                 return sentence
         
-        # === Strategy 4: Word boundary fallback (very aggressive) ===
-        # After 40 chars, just break at any word boundary
-        if len(buffer) > 40:
-            # Find last space before position 40
-            space_match = re.search(r'\s', buffer[25:])
+        # Word boundary fallback - after 70 chars
+        if len(buffer) > 70:
+            space_match = re.search(r'\s', buffer[45:])
             if space_match:
-                end_pos = 25 + space_match.start()
+                end_pos = 45 + space_match.start()
                 sentence = buffer[:end_pos].strip()
                 self._sentence_buffer = buffer[end_pos:].lstrip()
                 return sentence
         
-        # === Strategy 5: Hard cutoff ===
-        # After 60 chars with no breaks, just speak it
-        if len(buffer) > 60:
-            sentence = buffer[:50].strip()
-            self._sentence_buffer = buffer[50:].lstrip()
+        # Hard cutoff at 90 chars
+        if len(buffer) > 90:
+            sentence = buffer[:70].strip()
+            self._sentence_buffer = buffer[70:].lstrip()
             return sentence
         
         return None
     
+    def _clean_for_tts(self, text: str) -> str:
+        """Clean text for TTS - remove markdown, emojis, and formatting."""
+        import re
+        
+        # Remove markdown bold/italic (***text***, **text**, *text*, __text__, _text_)
+        text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
+        text = re.sub(r'_{1,2}([^_]+)_{1,2}', r'\1', text)
+        
+        # Remove inline code backticks
+        text = re.sub(r'`([^`]+)`', r'\1', text)
+        
+        # Remove code blocks
+        text = re.sub(r'```[\s\S]*?```', '', text)
+        
+        # Remove headers (# ## ### etc)
+        text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+        
+        # Remove bullet points and numbered lists
+        text = re.sub(r'^\s*[-*•]\s+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+        
+        # Remove links [text](url) -> text
+        text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+        
+        # Remove emojis (common unicode ranges)
+        text = re.sub(r'[\U0001F600-\U0001F64F]', '', text)  # emoticons
+        text = re.sub(r'[\U0001F300-\U0001F5FF]', '', text)  # symbols & pictographs
+        text = re.sub(r'[\U0001F680-\U0001F6FF]', '', text)  # transport & map
+        text = re.sub(r'[\U0001F1E0-\U0001F1FF]', '', text)  # flags
+        text = re.sub(r'[\U00002702-\U000027B0]', '', text)  # dingbats
+        text = re.sub(r'[\U0001F900-\U0001F9FF]', '', text)  # supplemental symbols
+        
+        # Remove other special characters that TTS might struggle with
+        text = text.replace('…', '...')
+        text = text.replace('—', ', ')
+        text = text.replace('–', ', ')
+        text = text.replace('"', '"').replace('"', '"')
+        text = text.replace(''', "'").replace(''', "'")
+        
+        # Clean up extra whitespace
+        text = re.sub(r'\n\s*\n', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        
+        return text.strip()
+    
     def _speak_sentence(self, sentence: str):
-        """Send a sentence to TTS immediately."""
+        """Send a sentence to TTS and update UI.
+        
+        This is the single source of truth: UI shows what we speak.
+        """
         # Filter out any tool tags before speaking
         if self._tool_manager:
             sentence = self._tool_manager.clean_tool_tags(sentence)
+        
+        # Clean markdown and formatting for TTS
+        sentence = self._clean_for_tts(sentence)
         
         if not sentence:
             return
@@ -603,13 +759,19 @@ class Controller(QObject):
         if not self._tts_queue or not self._tts or not self._tts.is_available():
             return
         
+        # Cancel any pending hide timers by incrementing counter
+        self._hide_text_counter = getattr(self, '_hide_text_counter', 0) + 1
+        
+        # Update UI with what we're about to speak
+        if self._overlay:
+            self._overlay.show_text(sentence)
+        
         # Mark timing: first audio sent to TTS
         if not self._speaking_started:
             self._speaking_started = True
             self._timing["tts_first_audio"] = time.time()
             time_to_first_audio = self._timing["tts_first_audio"] - self._timing["ptt_released"]
             print(f"[TIMING] Time to first audio: {time_to_first_audio:.3f}s (PTT release → TTS start)")
-            # Note: on_speaking_start callback in TTS will handle avatar state
         
         print(f"TTS (streaming): '{sentence[:40]}...'")
         self._tts_queue.speak(sentence)
@@ -630,20 +792,7 @@ class Controller(QObject):
                 tool_name, query = tool_call
                 print(f"Tool requested: {tool_name} - {query}")
                 
-                # Speak a random varied acknowledgement
-                import random
-                acknowledgements = [
-                    "One sec.",
-                    "Let me check.",
-                    "Checking.",
-                    "Looking that up.",
-                    "Give me a moment.",
-                    "One moment.",
-                ]
-                ack = random.choice(acknowledgements)
-                print(f"Speaking acknowledgement: '{ack}'")
-                if self._tts_queue and self._tts and self._tts.is_available():
-                    self._tts_queue.speak(ack)
+                # Note: Acknowledgement already spoken when search tag was detected during streaming
                 
                 # Execute the tool
                 result = self._tool_manager.execute_tool(tool_name, query)
@@ -663,6 +812,21 @@ Answer naturally with this information. Start directly with the answer - do NOT 
                     return  # Wait for follow-up response
                 else:
                     print(f"Tool error: {result.error}")
+        
+        # Check if parallel search found results that the LLM didn't use
+        if hasattr(self, '_pending_search_results') and self._pending_search_results:
+            # LLM responded without search data, but we have results ready
+            print(f"[Parallel] Injecting search results into follow-up...")
+            follow_up_prompt = f"""The user asked: {self._current_response}
+
+Here is current information from the web:
+{self._pending_search_results}
+
+Please answer the user's original question using this real-time data. Be conversational and direct."""
+            
+            self._pending_search_results = None  # Clear it
+            self._send_followup_with_results(follow_up_prompt)
+            return  # Wait for follow-up
         
         # Clean any tool tags from response
         if self._tool_manager:
@@ -697,6 +861,7 @@ Answer naturally with this information. Start directly with the answer - do NOT 
         self._current_response = ""
         self._sentence_buffer = ""
         self._speaking_started = False
+        self._search_detected = False  # Reset so follow-up tokens go to TTS
         
         def on_token(token: str):
             self.llm_token_received.emit(token)
@@ -758,11 +923,13 @@ Answer naturally with this information. Start directly with the answer - do NOT 
         
         self.set_avatar_state(AvatarState.IDLE)
         
-        # Hide text after a delay
+        # Hide text after a delay (counter ensures new speech cancels old hide timer)
         if self._overlay:
             duration = self._config.get("ui", "text_display_duration", default=5.0)
-            # Hide both user text and response text after delay
-            QTimer.singleShot(int(duration * 1000), self._hide_all_text)
+            self._hide_text_counter = getattr(self, '_hide_text_counter', 0) + 1
+            expected = self._hide_text_counter
+            QTimer.singleShot(int(duration * 1000), 
+                lambda: self._hide_all_text() if self._hide_text_counter == expected else None)
     
     def _hide_all_text(self):
         """Hide response text."""

@@ -365,10 +365,27 @@ class TTSQueue:
         self._text_queue.put(None)  # Signal to exit
         self._stop_audio()
     
+    def clear_queue(self):
+        """Clear pending text from queue without stopping the processor."""
+        # Clear text queue
+        while not self._text_queue.empty():
+            try:
+                self._text_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        # Clear audio chunks
+        while not self._audio_chunks.empty():
+            try:
+                self._audio_chunks.get_nowait()
+            except queue.Empty:
+                break
+        
+        # Clear sentence buffer
+        self._sentence_buffer = ""
+    
     def speak(self, text: str):
         """Add text to the speech queue for immediate synthesis."""
-        with self._state_lock:
-            self._pending_sentences += 1
         self._text_queue.put(text)
     
     def _ensure_stream_running(self):
@@ -417,7 +434,7 @@ class TTSQueue:
             channels=1,
             dtype=np.float32,
             callback=audio_callback,
-            blocksize=1024,
+            blocksize=2048,
         )
         self._stream.start()
     
@@ -445,27 +462,107 @@ class TTSQueue:
             self.amplitude_callback(0.0)
     
     def _synthesis_loop(self):
-        """Main loop - synthesizes text as it arrives, keeps audio flowing."""
+        """Main loop - synthesizes text with parallel synthesis for seamless playback.
+        
+        Key improvement: Multiple sentences can synthesize concurrently while
+        maintaining correct playback order. Each sentence gets its own chunk queue,
+        and we drain them in FIFO order to the main audio queue.
+        """
         import time
+        from collections import deque
+        
+        # Track in-flight syntheses: (chunk_queue, done_event, text_snippet)
+        pending_syntheses: deque = deque()
+        MAX_CONCURRENT = 3  # Allow up to 3 sentences synthesizing in parallel
         
         while self._running:
-            try:
-                text = self._text_queue.get(timeout=0.05)
-            except queue.Empty:
-                # Check if we should stop the stream (no more audio)
+            # === Phase 1: Start new syntheses if we have capacity ===
+            while len(pending_syntheses) < MAX_CONCURRENT:
+                try:
+                    text = self._text_queue.get_nowait()
+                except queue.Empty:
+                    break
+                
+                if text is None:
+                    # Shutdown signal - but first drain pending
+                    self._running = False
+                    break
+                
+                # Start speaking if not already
+                self._start_speaking_if_needed()
+                
+                # Create a dedicated queue for this sentence's audio chunks
+                sentence_chunks: queue.Queue[np.ndarray] = queue.Queue()
+                done_event = threading.Event()
+                
+                # Create callbacks that capture the right queue/event
+                def make_callbacks(chunks_q: queue.Queue, done_evt: threading.Event):
+                    def on_chunk(chunk: np.ndarray):
+                        processed = self._apply_effects(chunk)
+                        chunks_q.put(processed)
+                    
+                    def on_complete():
+                        done_evt.set()
+                    
+                    return on_chunk, on_complete
+                
+                on_chunk, on_complete = make_callbacks(sentence_chunks, done_event)
+                
+                print(f"TTS: '{text[:40]}...'")
+                self.tts.synthesize_streaming(text, on_chunk, on_complete)
+                
+                pending_syntheses.append((sentence_chunks, done_event, text[:20]))
+                
+                with self._state_lock:
+                    self._pending_sentences += 1
+            
+            # === Phase 2: Drain chunks from front synthesis to main audio queue ===
+            # This maintains order: we only output chunks from the oldest synthesis
+            while pending_syntheses:
+                front_chunks, front_done, front_snippet = pending_syntheses[0]
+                
+                # Drain all available chunks from the front synthesis
+                drained = False
+                while True:
+                    try:
+                        chunk = front_chunks.get_nowait()
+                        self._audio_chunks.put(chunk)
+                        drained = True
+                    except queue.Empty:
+                        break
+                
+                # If this synthesis is complete and fully drained, move to next
+                if front_done.is_set() and front_chunks.empty():
+                    pending_syntheses.popleft()
+                    with self._state_lock:
+                        self._pending_sentences = max(0, self._pending_sentences - 1)
+                else:
+                    # Still waiting for more chunks from current synthesis
+                    break
+            
+            # Small sleep to avoid busy-looping
+            time.sleep(0.005)
+            
+            # Check if we should go idle (no more pending work)
+            if not pending_syntheses:
                 self._check_idle()
-                continue
+        
+        # === Cleanup: drain any remaining syntheses ===
+        while pending_syntheses:
+            front_chunks, front_done, _ = pending_syntheses[0]
             
-            if text is None:
-                break
+            # Wait for synthesis to complete (with timeout)
+            front_done.wait(timeout=5.0)
             
-            # Start speaking if not already
-            self._start_speaking_if_needed()
+            # Drain remaining chunks
+            while True:
+                try:
+                    chunk = front_chunks.get_nowait()
+                    self._audio_chunks.put(chunk)
+                except queue.Empty:
+                    break
             
-            # Synthesize this text
-            self._synthesize_text(text)
-            
-            # Mark sentence done
+            pending_syntheses.popleft()
             with self._state_lock:
                 self._pending_sentences = max(0, self._pending_sentences - 1)
         
@@ -535,24 +632,7 @@ class TTSQueue:
         if self.on_speaking_end:
             self.on_speaking_end()
     
-    def _synthesize_text(self, text: str):
-        """Synthesize text and add audio chunks to buffer."""
-        done_event = threading.Event()
-        
-        def on_chunk(chunk):
-            # Apply voice effects and add to playback queue
-            processed = self._apply_effects(chunk)
-            self._audio_chunks.put(processed)
-        
-        def on_complete():
-            done_event.set()
-        
-        print(f"TTS: '{text[:40]}...'")
-        self.tts.synthesize_streaming(text, on_chunk, on_complete)
-        
-        # Wait for synthesis (but audio plays in parallel)
-        if not done_event.wait(timeout=30):
-            print("TTS: Synthesis timeout")
+
     
     def clear(self):
         """Clear pending speech."""

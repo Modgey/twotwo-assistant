@@ -72,12 +72,25 @@ class ToolManager:
         if not enabled:
             return ""
         
-        # Balance between clarity and brevity
-        return """
+        return """You have a Search Tool for REAL-TIME information only.
 
-You can search the web: <search>your query</search>
-Use search for: weather, news, current events, things you don't know.
-Include location and time context in your search queries when relevant."""
+ONLY SEARCH FOR:
+- Current news headlines
+- Today's weather  
+- Live sports scores
+- Stock prices
+- Info about NEW releases (games, movies, products)
+
+DO NOT SEARCH FOR:
+- Jokes, casual chat, opinions
+- General knowledge you already know
+- Historical facts
+
+FORMAT (when searching):
+<search>query</search>
+Put the search tag FIRST. Do not write anything before it.
+
+If unsure, just answer directly without searching."""
     
     def extract_tool_call(self, text: str) -> Optional[tuple[str, str]]:
         """Extract a tool call from LLM response.

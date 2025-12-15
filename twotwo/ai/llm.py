@@ -149,24 +149,39 @@ class OllamaLLM:
         self._messages = []
     
     def get_full_system_prompt(self) -> str:
-        """Get the complete system prompt with current date/time/location context.
+        """Load and fill the system prompt template.
         
-        This is called fresh for each request to ensure the time is always current.
+        Edit ai/system_prompt.txt to change the prompt structure.
+        Placeholders: {{location}}, {{date}}, {{time}}, {{personality}}, {{tools}}
         """
-        now = datetime.now()
-        date_str = now.strftime("%A, %B %d, %Y")
-        time_str = now.strftime("%I:%M %p")
+        from pathlib import Path
         
-        # Get cached location (computed once)
+        # Load template
+        template_path = Path(__file__).parent / "system_prompt.txt"
+        try:
+            template = template_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Fallback if template missing
+            template = "{{personality}}\n\n{{tools}}"
+        
+        # Get current date/time
+        now = datetime.now()
+        
+        # Get location (cached)
         if not hasattr(self, '_cached_location'):
             self._cached_location = self._get_location()
         
-        location_line = f"Location: {self._cached_location}\n" if self._cached_location else ""
+        # Get tools section (will be filled in by controller)
+        tools_section = getattr(self, '_tools_prompt', '')
         
-        return f"""Current date: {date_str}
-Current time: {time_str}
-{location_line}
-{self.system_prompt}"""
+        # Replace placeholders
+        prompt = template.replace("{{location}}", self._cached_location or "Unknown")
+        prompt = prompt.replace("{{date}}", now.strftime("%A, %B %d, %Y"))
+        prompt = prompt.replace("{{time}}", now.strftime("%I:%M %p"))
+        prompt = prompt.replace("{{personality}}", self.system_prompt)
+        prompt = prompt.replace("{{tools}}", tools_section)
+        
+        return prompt
     
     def _get_location(self) -> str:
         """Get location from config or infer from timezone (cached)."""
