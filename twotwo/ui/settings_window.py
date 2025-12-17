@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import get_config
-from ui.theme import AMBER
+from ui.theme import AMBER, THEMES
 from voice.stt import WhisperSTT
 from ai.model_manager import get_model_manager
 
@@ -37,7 +37,8 @@ class SettingsWindow(QWidget):
     def _setup_window(self):
         """Configure window properties."""
         self.setWindowTitle("Settings")
-        self.setFixedSize(420, 480)
+        self.setFixedWidth(420)
+        self.setMinimumHeight(480)
         
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -46,10 +47,10 @@ class SettingsWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     
     def _setup_style(self):
-        """Set up the black and amber minimal style."""
-        amber_rgb = f"rgb({AMBER[0]}, {AMBER[1]}, {AMBER[2]})"
-        amber_dim = f"rgba({AMBER[0]}, {AMBER[1]}, {AMBER[2]}, 0.4)"
-        amber_faint = f"rgba({AMBER[0]}, {AMBER[1]}, {AMBER[2]}, 0.15)"
+        """Set up the black and white minimal style."""
+        accent_rgb = "rgb(255, 255, 255)"
+        accent_dim = "rgba(255, 255, 255, 0.4)"
+        accent_faint = "rgba(255, 255, 255, 0.15)"
         
         style = """
             QWidget {
@@ -122,8 +123,8 @@ class SettingsWindow(QWidget):
             }
             
             QTabBar::tab:selected {
-                color: $AMBER_RGB;
-                border-bottom: 2px solid $AMBER_RGB;
+                color: $ACCENT_RGB;
+                border-bottom: 2px solid $ACCENT_RGB;
             }
             
             /* Labels */
@@ -148,16 +149,16 @@ class SettingsWindow(QWidget):
                 border: 1px solid rgba(255, 255, 255, 0.1);
                 border-radius: 6px;
                 padding: 8px 12px;
-                min-height: 18px;
+                min-height: 20px;
             }
             
             QComboBox:hover {
-                border-color: $AMBER_DIM;
+                border-color: $ACCENT_DIM;
                 background-color: rgba(255, 255, 255, 0.08);
             }
             
             QComboBox:focus {
-                border-color: $AMBER_RGB;
+                border-color: $ACCENT_RGB;
             }
             
             QComboBox::drop-down {
@@ -177,7 +178,7 @@ class SettingsWindow(QWidget):
                 background-color: rgb(20, 20, 20);
                 border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 6px;
-                selection-background-color: $AMBER_FAINT;
+                selection-background-color: $ACCENT_FAINT;
                 padding: 4px;
                 outline: none;
             }
@@ -193,13 +194,13 @@ class SettingsWindow(QWidget):
             }
             
             QSlider::sub-page:horizontal {
-                background: $AMBER_DIM;
+                background: $ACCENT_DIM;
                 height: 4px;
                 border-radius: 2px;
             }
             
             QSlider::handle:horizontal {
-                background: $AMBER_RGB;
+                background: $ACCENT_RGB;
                 width: 16px;
                 height: 16px;
                 margin: -6px 0;
@@ -216,15 +217,16 @@ class SettingsWindow(QWidget):
                 border-radius: 6px;
                 padding: 8px 12px;
                 color: #ffffff;
-                selection-background-color: $AMBER_DIM;
+                selection-background-color: $ACCENT_DIM;
+                min-height: 20px;
             }
             
             QLineEdit:hover {
-                border-color: $AMBER_DIM;
+                border-color: $ACCENT_DIM;
             }
             
             QLineEdit:focus {
-                border-color: $AMBER_RGB;
+                border-color: $ACCENT_RGB;
                 background-color: rgba(255, 255, 255, 0.08);
             }
             
@@ -234,15 +236,15 @@ class SettingsWindow(QWidget):
                 border-radius: 6px;
                 padding: 8px;
                 color: #ffffff;
-                selection-background-color: $AMBER_DIM;
+                selection-background-color: $ACCENT_DIM;
             }
             
             QTextEdit:hover {
-                border-color: $AMBER_DIM;
+                border-color: $ACCENT_DIM;
             }
             
             QTextEdit:focus {
-                border-color: $AMBER_RGB;
+                border-color: $ACCENT_RGB;
             }
             
             QCheckBox {
@@ -259,12 +261,80 @@ class SettingsWindow(QWidget):
             }
             
             QCheckBox::indicator:hover {
-                border-color: $AMBER_DIM;
+                border-color: $ACCENT_DIM;
             }
             
             QCheckBox::indicator:checked {
-                background: $AMBER_RGB;
-                border-color: $AMBER_RGB;
+                background: $ACCENT_RGB;
+                border-color: $ACCENT_RGB;
+            }
+            
+            /* Toggle Switch Style */
+            #toolToggle::indicator {
+                width: 32px;
+                height: 16px;
+                border-radius: 8px;
+            }
+            
+            #toolToggle::indicator:unchecked {
+                background-color: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            
+            #toolToggle::indicator:checked {
+                background-color: $ACCENT_RGB;
+                border: 1px solid $ACCENT_RGB;
+            }
+            
+            /* Tool Item */
+            #toolItem {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                margin-bottom: 8px;
+            }
+            
+            #toolHeader {
+                padding: 12px 16px;
+                background: transparent;
+            }
+            
+            #toolName {
+                font-weight: 600;
+                font-size: 13px;
+                color: #ffffff;
+            }
+            
+            #toolDesc {
+                font-size: 11px;
+                color: rgba(255, 255, 255, 0.4);
+            }
+            
+            #toolSettingsBtn {
+                background: transparent;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 4px;
+                color: rgba(255, 255, 255, 0.5);
+                font-size: 9px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                padding: 4px 8px;
+                min-width: 60px;
+                min-height: 20px;
+            }
+            
+            #toolSettingsBtn:hover {
+                color: #ffffff;
+                border-color: rgba(255, 255, 255, 0.3);
+                background: rgba(255, 255, 255, 0.05);
+            }
+            
+            #toolSettingsArea {
+                background-color: rgba(0, 0, 0, 0.2);
+                border-top: 1px solid rgba(255, 255, 255, 0.05);
+                border-bottom-left-radius: 8px;
+                border-bottom-right-radius: 8px;
+                padding: 12px 16px;
             }
             
             QPushButton {
@@ -273,7 +343,7 @@ class SettingsWindow(QWidget):
                 border-radius: 6px;
                 padding: 8px 16px;
                 font-weight: 500;
-                min-height: 18px;
+                min-height: 20px;
             }
             
             QPushButton:hover {
@@ -286,18 +356,18 @@ class SettingsWindow(QWidget):
             }
             
             #accentButton {
-                background-color: $AMBER_FAINT;
-                border-color: $AMBER_DIM;
+                background-color: $ACCENT_FAINT;
+                border-color: $ACCENT_DIM;
             }
             
             #accentButton:hover {
-                background-color: $AMBER_DIM;
+                background-color: $ACCENT_DIM;
             }
         """
         
-        style = style.replace("$AMBER_RGB", amber_rgb)
-        style = style.replace("$AMBER_DIM", amber_dim)
-        style = style.replace("$AMBER_FAINT", amber_faint)
+        style = style.replace("$ACCENT_RGB", accent_rgb)
+        style = style.replace("$ACCENT_DIM", accent_dim)
+        style = style.replace("$ACCENT_FAINT", accent_faint)
         
         self.setStyleSheet(style)
     
@@ -343,6 +413,7 @@ class SettingsWindow(QWidget):
         # Create tabs
         self._tabs.addTab(self._create_voice_tab(), "Voice")
         self._tabs.addTab(self._create_ai_tab(), "AI")
+        self._tabs.addTab(self._create_tools_tab(), "Tools")
         self._tabs.addTab(self._create_display_tab(), "Display")
         
         main_layout.addWidget(self._tabs)
@@ -433,10 +504,21 @@ class SettingsWindow(QWidget):
         layout.setContentsMargins(20, 16, 20, 20)
         layout.setSpacing(4)
         
-        # Model Section
-        self._create_section("Language Model", layout)
+        # Backend Selection
+        self._create_section("AI Source", layout)
+        self._ai_backend = QComboBox()
+        self._ai_backend.addItems(["Ollama (Local)", "OpenRouter (Cloud)"])
+        self._ai_backend.currentIndexChanged.connect(self._on_backend_changed)
+        self._create_field("Backend", self._ai_backend, layout)
+
+        # Ollama Section (visible only when Ollama is selected)
+        self._ollama_container = QWidget()
+        ollama_layout = QVBoxLayout(self._ollama_container)
+        ollama_layout.setContentsMargins(0, 0, 0, 0)
+        ollama_layout.setSpacing(4)
         
-        # Model dropdown with refresh button
+        # Redundant header removed
+        
         model_row = QWidget()
         model_layout = QHBoxLayout(model_row)
         model_layout.setContentsMargins(0, 0, 0, 0)
@@ -449,11 +531,32 @@ class SettingsWindow(QWidget):
         refresh_btn = QPushButton("↻")
         refresh_btn.setObjectName("accentButton")
         refresh_btn.setFixedWidth(36)
-        refresh_btn.setToolTip("Refresh models")
         refresh_btn.clicked.connect(self._refresh_ai_models)
         model_layout.addWidget(refresh_btn)
         
-        self._create_field("Ollama Model", model_row, layout)
+        self._create_field("Local Model", model_row, ollama_layout)
+        layout.addWidget(self._ollama_container)
+
+        # OpenRouter Section (visible only when OpenRouter is selected)
+        self._openrouter_container = QWidget()
+        or_layout = QVBoxLayout(self._openrouter_container)
+        or_layout.setContentsMargins(0, 0, 0, 0)
+        or_layout.setSpacing(4)
+
+        # Redundant header removed
+        
+        self._openrouter_api_key = QLineEdit()
+        self._openrouter_api_key.setPlaceholderText("Enter OpenRouter API key...")
+        self._openrouter_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._openrouter_api_key.textChanged.connect(self._on_openrouter_key_changed)
+        self._create_field("API Key", self._openrouter_api_key, or_layout)
+
+        self._openrouter_model = QLineEdit()
+        self._openrouter_model.setPlaceholderText("e.g., google/gemini-2.0-flash-exp:free")
+        self._openrouter_model.textChanged.connect(self._on_openrouter_model_changed)
+        self._create_field("Cloud Model ID", self._openrouter_model, or_layout)
+        
+        layout.addWidget(self._openrouter_container)
         
         # Personality
         self._personality = QTextEdit()
@@ -462,25 +565,78 @@ class SettingsWindow(QWidget):
         self._personality.textChanged.connect(self._on_personality_changed)
         self._create_field("Personality Prompt", self._personality, layout)
         
-        # Web Search Section
-        self._create_section("Web Search", layout)
-        
-        self._enable_search = QCheckBox("Enable Brave Search")
-        self._enable_search.stateChanged.connect(self._on_search_enabled_changed)
-        layout.addWidget(self._enable_search)
-        layout.addSpacing(8)
-        
-        self._brave_api_key = QLineEdit()
-        self._brave_api_key.setPlaceholderText("Enter Brave Search API key...")
-        self._brave_api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._brave_api_key.textChanged.connect(self._on_brave_key_changed)
-        self._create_field("API Key", self._brave_api_key, layout)
+        # Web Search Section removed - moved to Tools tab
         
         layout.addStretch()
         
         # Load models
         self._refresh_ai_models()
         
+        return tab
+
+    def _create_tools_tab(self) -> QWidget:
+        """Create the Tools settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(20, 16, 20, 20)
+        layout.setSpacing(4)
+        
+        self._create_section("Available Tools", layout)
+        
+        # Search Tool Item
+        search_item = QFrame()
+        search_item.setObjectName("toolItem")
+        search_layout = QVBoxLayout(search_item)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(0)
+        
+        # Header (Name, Toggle, Settings)
+        header = QWidget()
+        header.setObjectName("toolHeader")
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(16, 12, 12, 12)
+        
+        info_v = QVBoxLayout()
+        info_v.setSpacing(2)
+        name_label = QLabel("Web Search")
+        name_label.setObjectName("toolName")
+        desc_label = QLabel("Real-time info via Brave Search")
+        desc_label.setObjectName("toolDesc")
+        info_v.addWidget(name_label)
+        info_v.addWidget(desc_label)
+        h_layout.addLayout(info_v, 1)
+        
+        self._enable_search = QCheckBox()
+        self._enable_search.setObjectName("toolToggle")
+        self._enable_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._enable_search.stateChanged.connect(self._on_search_enabled_changed)
+        h_layout.addWidget(self._enable_search)
+        
+        self._search_settings_btn = QPushButton("SETTINGS")
+        self._search_settings_btn.setObjectName("toolSettingsBtn")
+        self._search_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._search_settings_btn.clicked.connect(self._toggle_search_settings)
+        h_layout.addWidget(self._search_settings_btn)
+        
+        search_layout.addWidget(header)
+        
+        # Expandable Settings Area
+        self._search_settings_area = QWidget()
+        self._search_settings_area.setObjectName("toolSettingsArea")
+        self._search_settings_area.setVisible(False)
+        area_layout = QVBoxLayout(self._search_settings_area)
+        area_layout.setContentsMargins(16, 12, 16, 12)
+        
+        self._brave_api_key = QLineEdit()
+        self._brave_api_key.setPlaceholderText("Enter Brave Search API key...")
+        self._brave_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._brave_api_key.textChanged.connect(self._on_brave_key_changed)
+        self._create_field("Brave API Key", self._brave_api_key, area_layout)
+        
+        search_layout.addWidget(self._search_settings_area)
+        layout.addWidget(search_item)
+        
+        layout.addStretch()
         return tab
     
     def _create_display_tab(self) -> QWidget:
@@ -497,6 +653,11 @@ class SettingsWindow(QWidget):
         self._avatar_size.addItems(["Small (150px)", "Medium (200px)", "Large (250px)"])
         self._avatar_size.currentIndexChanged.connect(self._on_avatar_size_changed)
         self._create_field("Size (requires restart)", self._avatar_size, layout)
+        
+        self._display_color = QComboBox()
+        self._display_color.addItems([t.capitalize() for t in THEMES.keys()])
+        self._display_color.currentTextChanged.connect(self._on_display_color_changed)
+        self._create_field("Color Theme", self._display_color, layout)
         
         # Opacity with value display
         opacity_row = QWidget()
@@ -560,17 +721,33 @@ class SettingsWindow(QWidget):
         size_map = {"small": 0, "medium": 1, "large": 2}
         self._avatar_size.setCurrentIndex(size_map.get(size.lower(), 1))
         
+        # Display color
+        color = self.config.get("ui", "display_color", default="amber")
+        idx = self._display_color.findText(color.capitalize())
+        if idx >= 0:
+            self._display_color.setCurrentIndex(idx)
+        
         # Opacity
         opacity = self.config.get("ui", "opacity", default=0.85)
         opacity_val = int(opacity * 100)
         self._opacity.setValue(opacity_val)
         self._opacity_label.setText(f"{opacity_val}%")
         
-        # AI model
+        # AI Settings
+        backend = self.config.get("ai", "backend", default="ollama")
+        self._ai_backend.setCurrentIndex(1 if backend == "openrouter" else 0)
+        self._update_backend_visibility(backend)
+
         ai_model = self.config.get("ai", "model", default="llama3.2:3b")
         idx = self._ai_model.findText(ai_model)
         if idx >= 0:
             self._ai_model.setCurrentIndex(idx)
+
+        or_key = self.config.get("ai", "openrouter_api_key", default="")
+        self._openrouter_api_key.setText(or_key)
+
+        or_model = self.config.get("ai", "openrouter_model", default="google/gemini-2.0-flash-exp:free")
+        self._openrouter_model.setText(or_model)
         
         # Personality
         personality = self.config.get("ai", "personality", default="")
@@ -582,8 +759,18 @@ class SettingsWindow(QWidget):
         
         brave_key = self.config.get("ai", "brave_api_key", default="")
         self._brave_api_key.setText(brave_key)
-    
+        
     # Event handlers
+    
+    def _toggle_search_settings(self):
+        """Toggle visibility of search tool settings."""
+        visible = self._search_settings_area.isVisible()
+        self._search_settings_area.setVisible(not visible)
+        # Update button appearance
+        if not visible:
+            self._search_settings_btn.setStyleSheet("color: white; background: rgba(255, 255, 255, 0.1);")
+        else:
+            self._search_settings_btn.setStyleSheet("")
     
     def _on_voice_style_changed(self, text: str):
         style = text.lower()
@@ -607,6 +794,11 @@ class SettingsWindow(QWidget):
             size = sizes[index]
             self.config.set("ui", "avatar_size", size)
             self.settings_changed.emit("avatar_size", size)
+            
+    def _on_display_color_changed(self, text: str):
+        color = text.lower()
+        self.config.set("ui", "display_color", color)
+        self.settings_changed.emit("display_color", color)
     
     def _on_opacity_changed(self, value: int):
         self._opacity_label.setText(f"{value}%")
@@ -645,6 +837,25 @@ class SettingsWindow(QWidget):
         if text and not text.startswith("No models") and not text.startswith("Ollama"):
             self.config.set("ai", "model", text)
             self.settings_changed.emit("ai_model", text)
+
+    def _on_backend_changed(self, index: int):
+        backend = "openrouter" if index == 1 else "ollama"
+        self._update_backend_visibility(backend)
+        self.config.set("ai", "backend", backend)
+        self.settings_changed.emit("ai_backend", backend)
+
+    def _update_backend_visibility(self, backend: str):
+        is_or = backend == "openrouter"
+        self._ollama_container.setVisible(not is_or)
+        self._openrouter_container.setVisible(is_or)
+
+    def _on_openrouter_key_changed(self, text: str):
+        self.config.set("ai", "openrouter_api_key", text)
+        self.settings_changed.emit("openrouter_api_key", text)
+
+    def _on_openrouter_model_changed(self, text: str):
+        self.config.set("ai", "openrouter_model", text)
+        self.settings_changed.emit("ai_model", text)
     
     def _on_personality_changed(self):
         text = self._personality.toPlainText()

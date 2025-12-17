@@ -19,34 +19,52 @@ class SearchIntentDetector:
         "gemma2:2b",
     ]
     
-    CLASSIFICATION_PROMPT = """You are a search intent classifier. Your ONLY job is to decide if a query needs a real-time web search.
+    # Cloud classifier model (fast & cheap)
+    CLOUD_CLASSIFIER = "mistralai/voxtral-small-24b-2507"
 
-Respond with ONLY "SEARCH" or "NO_SEARCH" - nothing else.
+    
+    CLASSIFICATION_PROMPT = """
+    <task>
+    Classify if query needs REAL-TIME WEB SEARCH.
+    Output ONLY "SEARCH" or "NO_SEARCH".
+    </task>
 
-SEARCH if the query asks about:
-- Current/live sports scores, games, or schedules
-- Today's weather or forecasts
-- Breaking news or recent events
-- Stock prices or market data  
-- What time it is in a location
-- Current status of anything (is X open, is X happening)
-- Any fact the user expects to be up-to-date
+    <rules>
+    1. SEARCH ONLY if query asks for:
+       - Current events/news (politics, sports, entertainment)
+       - Live data (weather, stocks, time)
+       - Dynamic specific facts (release dates, scores)
 
-NO_SEARCH if the query is:
-- General knowledge (history, science, definitions)
-- Casual conversation (hello, how are you, thanks)
-- Personal questions (what do you think, your opinion)
-- Requests that don't need current data
+    2. NO_SEARCH if query is:
+       - Conversational ("What's up", "How are you", "Hello")
+       - General knowledge/Facts (History, Science, Math)
+       - Opinions/Creative ("Tell me a joke", "Write a poem")
+       - Clarifications/Follow-ups ("What do you mean?", "Explain that")
 
-Query: "{query}"
+    3. CRITICAL: "What's up" and "What's going on" are GREETINGS, not search queries.
+    </rules>
 
-Response (SEARCH or NO_SEARCH):"""
+    Query: "{query}"
+    Classification:
+    """
 
-    def __init__(self, host: str = "http://127.0.0.1:11434"):
+    def __init__(self, backend: str = "ollama", host: str = "http://127.0.0.1:11434", api_key: str = ""):
+        self.backend = backend
         self.host = host
+        self.api_key = api_key
         self._classifier_model: Optional[str] = None
         self._session = requests.Session()
-        self._find_classifier_model()
+        
+        if self.backend == "ollama":
+            self._find_classifier_model()
+        else:
+            self._classifier_model = self.CLOUD_CLASSIFIER
+            self._session.headers.update({
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            })
+            print(f"Search intent detector using cloud backend: {self._classifier_model}")
+
     
     def _find_classifier_model(self):
         """Find an available tiny model for classification."""
@@ -88,24 +106,42 @@ Response (SEARCH or NO_SEARCH):"""
         try:
             prompt = self.CLASSIFICATION_PROMPT.format(query=query)
             
-            response = self._session.post(
-                f"{self.host}/api/generate",
-                json={
+            if self.backend == "ollama":
+                url = f"{self.host}/api/generate"
+                payload = {
                     "model": self._classifier_model,
                     "prompt": prompt,
                     "stream": False,
                     "options": {
-                        "num_predict": 10,  # We only need one word
-                        "temperature": 0,   # Deterministic
-                    }
-                },
+                        "num_predict": 10,
+                        "temperature": 0,
+                    },
+                    "context": [],
+                }
+            else:
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                payload = {
+                    "model": self._classifier_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 10,
+                    "temperature": 0,
+                }
+            
+            response = self._session.post(
+                url,
+                json=payload,
                 timeout=timeout,
             )
             
             if response.status_code != 200:
+                print(f"[Intent] Backend error: {response.status_code}")
                 return False
             
-            result = response.json().get("response", "").strip().upper()
+            data = response.json()
+            if self.backend == "ollama":
+                result = data.get("response", "").strip().upper()
+            else:
+                result = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip().upper()
             
             # Check if response indicates search needed
             needs = "SEARCH" in result and "NO_SEARCH" not in result
@@ -114,6 +150,7 @@ Response (SEARCH or NO_SEARCH):"""
                 print(f"[Intent] Query needs search: '{query[:50]}...'")
             
             return needs
+
             
         except requests.RequestException:
             # Timeout or error - don't block, just skip search
@@ -128,9 +165,18 @@ Response (SEARCH or NO_SEARCH):"""
 _detector: Optional[SearchIntentDetector] = None
 
 
-def get_search_intent_detector() -> SearchIntentDetector:
-    """Get the global search intent detector instance."""
+def get_search_intent_detector(backend: str = "ollama", **kwargs) -> SearchIntentDetector:
+    """Get or create the search intent detector instance."""
     global _detector
+    
+    # If backend changed, we must re-initialize
+    if _detector is not None and _detector.backend != backend:
+        _detector = None
+        
     if _detector is None:
-        _detector = SearchIntentDetector()
+        _detector = SearchIntentDetector(
+            backend=backend,
+            host=kwargs.get("host", "http://127.0.0.1:11434"),
+            api_key=kwargs.get("api_key", "")
+        )
     return _detector

@@ -33,6 +33,7 @@ DEFAULT_CONFIG = {
     "ui": {
         "avatar_position": {"x": 100, "y": 100},
         "avatar_size": "medium",
+        "display_color": "amber",
         "opacity": 0.85,
         "text_display_duration": 5.0
     },
@@ -52,6 +53,8 @@ DEFAULT_CONFIG = {
         "model": "gemma3:4b",
         "personality": "You are TwoTwo, a helpful AI assistant with a calm and professional demeanor. You provide concise, accurate responses.",
         "brave_api_key": "BSAdggG6sl88nwOsFEc44t1UHFmNE8V",
+        "openrouter_api_key": "",
+        "openrouter_model": "google/gemini-2.0-flash-exp:free",
         "enable_search": True
     }
 }

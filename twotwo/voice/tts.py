@@ -290,6 +290,7 @@ class TTSQueue:
         amplitude_callback: Optional[Callable[[float], None]] = None,
         on_speaking_start: Optional[Callable[[], None]] = None,
         on_speaking_end: Optional[Callable[[], None]] = None,
+        on_sentence_start: Optional[Callable[[str], None]] = None,
         streaming: bool = True,
         voice_style: str = "robot",
     ):
@@ -297,6 +298,7 @@ class TTSQueue:
         self.amplitude_callback = amplitude_callback
         self.on_speaking_start = on_speaking_start
         self.on_speaking_end = on_speaking_end
+        self.on_sentence_start = on_sentence_start
         self.streaming = streaming
         self.voice_style = voice_style
         
@@ -318,7 +320,7 @@ class TTSQueue:
         self._state_lock = threading.Lock()
         
         # Audio buffer - chunks ready for playback
-        self._audio_chunks: queue.Queue[np.ndarray] = queue.Queue()
+        self._audio_chunks: queue.Queue[np.ndarray | dict] = queue.Queue()
         self._current_chunk: Optional[np.ndarray] = None
         self._chunk_pos = 0
         self._buffer_lock = threading.Lock()
@@ -404,7 +406,16 @@ class TTSQueue:
                     # Need new chunk?
                     if self._current_chunk is None or self._chunk_pos >= len(self._current_chunk):
                         try:
-                            self._current_chunk = self._audio_chunks.get_nowait()
+                            item = self._audio_chunks.get_nowait()
+                            
+                            # Handle markers (text for UI sync)
+                            if isinstance(item, dict) and item.get("type") == "marker":
+                                if self.on_sentence_start:
+                                    self.on_sentence_start(item["text"])
+                                # Marker processed, loop to get next actual audio chunk
+                                continue
+                                
+                            self._current_chunk = item
                             self._chunk_pos = 0
                         except queue.Empty:
                             break
@@ -507,6 +518,10 @@ class TTSQueue:
                     return on_chunk, on_complete
                 
                 on_chunk, on_complete = make_callbacks(sentence_chunks, done_event)
+                
+                # Push the text marker into the queue BEFORE synthesis starts
+                # This ensures the UI updates right before audio plays
+                sentence_chunks.put({"type": "marker", "text": text})
                 
                 print(f"TTS: '{text[:40]}...'")
                 self.tts.synthesize_streaming(text, on_chunk, on_complete)

@@ -112,6 +112,11 @@ class OverlayWindow(QMainWindow):
     def set_opacity(self, opacity: float):
         """Set avatar opacity (0.0 to 1.0)."""
         self.avatar.set_opacity(opacity)
+
+    def set_theme(self, theme_name: str):
+        """Update color theme for avatar and text."""
+        self.avatar.set_theme(theme_name)
+        self.text_display.set_theme(theme_name)
     
     def show_text(self, text: str, duration: float = 0):
         """Show AI response text with smart positioning based on screen location.

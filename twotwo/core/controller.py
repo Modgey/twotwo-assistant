@@ -25,6 +25,7 @@ class Controller(QObject):
     llm_response_ready = Signal(str)  # Full response from LLM
     llm_token_received = Signal(str)  # Streaming token from LLM
     llm_error = Signal(str)  # LLM error
+    tts_sentence_start = Signal(str)  # TTS synchronization signal
     
     def __init__(self, app: QApplication):
         super().__init__()
@@ -146,6 +147,7 @@ class Controller(QObject):
                 amplitude_callback=self._on_playback_amplitude,
                 on_speaking_start=self._on_speaking_start,
                 on_speaking_end=self._on_speaking_end,
+                on_sentence_start=self.tts_sentence_start.emit,
                 voice_style=voice_style,
             )
             
@@ -163,52 +165,50 @@ class Controller(QObject):
     def _setup_ai(self):
         """Initialize AI components (LLM and tools)."""
         try:
-            from ai.llm import OllamaLLM
+            from ai.llm import get_llm
             from ai.model_manager import get_model_manager
             from ai.tools import get_tool_manager
             
-            # Get model manager and ensure Ollama is running
-            manager = get_model_manager()
+            # Get backend from config
+            backend = self._config.get("ai", "backend", default="ollama")
             
-            if not manager.is_ollama_installed():
-                print("Ollama not installed. Download from https://ollama.ai")
-                self._ai_enabled = False
-                return
+            # Ollama specific checks
+            if backend == "ollama":
+                manager = get_model_manager()
+                if not manager.is_ollama_installed():
+                    print("Ollama not installed. Download from https://ollama.ai")
+                    self._ai_enabled = False
+                    return
+                if not manager.ensure_running(auto_start=True):
+                    print("Could not start Ollama")
+                    self._ai_enabled = False
+                    return
+                
+                # Check if configured model is available
+                configured_model = self._config.get("ai", "model", default="llama3.2:3b")
+                available_models = manager.get_model_names(refresh=True)
+                if not available_models:
+                    print("No Ollama models found.")
+                    self._ai_enabled = False
+                    return
+                if configured_model not in available_models:
+                    configured_model = available_models[0]
+                
+                # Initialize local LLM
+                self._llm = get_llm(backend="ollama", model=configured_model)
+            else:
+                # OpenRouter initialization
+                api_key = self._config.get("ai", "openrouter_api_key", default="")
+                model = self._config.get("ai", "openrouter_model", default="google/gemini-2.0-flash-exp:free")
+                self._llm = get_llm(backend="openrouter", model=model, api_key=api_key)
             
-            # Auto-start Ollama if not running
-            if not manager.ensure_running(auto_start=True):
-                print("Could not start Ollama")
-                self._ai_enabled = False
-                return
-            
-            # Get configured model - just use what's in the config (persisted from last use)
-            configured_model = self._config.get("ai", "model", default="llama3.2:3b")
-            
-            # Check if configured model is available
-            available_models = manager.get_model_names(refresh=True)
-            
-            if not available_models:
-                print("No Ollama models found. Pull one with: ollama pull llama3.2:3b")
-                self._ai_enabled = False
-                return
-            
-            if configured_model not in available_models:
-                print(f"Warning: Configured model '{configured_model}' not found.")
-                print(f"Available models: {', '.join(available_models[:5])}")
-                print(f"Using first available: {available_models[0]}")
-                configured_model = available_models[0]
-                # Note: We don't save this to config - user's preference is preserved
-            
-            # Initialize LLM with the configured model
-            self._llm = OllamaLLM(model=configured_model)
-            
-            if self._llm.is_available():
-                print(f"AI initialized with model: {self._llm.model}")
+            if self._llm and self._llm.is_available():
+                print(f"AI initialized with backend: {backend}, model: {self._llm.model}")
                 self._ai_enabled = True
-                # Pre-warm the model to reduce first-response latency
                 self._llm.warm_up()
             else:
-                print("Warning: Ollama connection failed")
+                backend_name = "Ollama" if backend == "ollama" else "OpenRouter"
+                print(f"Warning: {backend_name} initialization failed (check settings/API key)")
                 self._ai_enabled = False
                 return
             
@@ -225,9 +225,10 @@ class Controller(QObject):
             # Initialize search intent detector (uses tiny model for classification)
             try:
                 from ai.search_intent import get_search_intent_detector
-                detector = get_search_intent_detector()
+                api_key = self._config.get("ai", "openrouter_api_key", default="")
+                detector = get_search_intent_detector(backend=backend, api_key=api_key)
                 if detector.is_available():
-                    print("Smart search intent detection enabled")
+                    print(f"Smart search intent detection enabled ({backend})")
             except ImportError:
                 pass
             
@@ -256,6 +257,7 @@ class Controller(QObject):
         self.llm_response_ready.connect(self._on_llm_response_ready)
         self.llm_token_received.connect(self._on_llm_token_received)
         self.llm_error.connect(self._on_llm_error)
+        self.tts_sentence_start.connect(self._on_update_overlay_text)
     
     @Slot()
     def _on_quit_requested(self):
@@ -307,13 +309,29 @@ class Controller(QObject):
             print(f"Switched to STT model: {value}")
         elif key == "opacity" and self._overlay:
             self._overlay.set_opacity(value)
+        elif key == "display_color" and self._overlay:
+            self._overlay.set_theme(value)
+            print(f"Updated display color to: {value}")
         elif key == "avatar_size":
             print(f"Avatar size change requires restart to take effect")
         elif key == "ai_model" and self._llm:
             self._llm.set_model(value)
-            self._config.set("ai", "model", value)  # Ensure it's saved to config
-            self._llm.warm_up()  # Pre-warm the new model
-            print(f"Switched to AI model: {value} (saved to config)")
+            # Save to correct config key depending on backend
+            backend = self._config.get("ai", "backend", default="ollama")
+            if backend == "ollama":
+                self._config.set("ai", "model", value)
+            else:
+                self._config.set("ai", "openrouter_model", value)
+            self._llm.warm_up()
+            print(f"Switched to AI model: {value}")
+        elif key == "ai_backend":
+            self._config.set("ai", "backend", value)
+            print(f"Switched AI backend to: {value}")
+            self._setup_ai()  # Re-initialize LLM
+        elif key == "openrouter_api_key":
+            self._config.set("ai", "openrouter_api_key", value)
+            print("Updated OpenRouter API key")
+            self._setup_ai()  # Re-initialize LLM
         elif key == "personality" and self._llm:
             self._llm.set_system_prompt(value)
             print("Updated AI personality")
@@ -487,25 +505,29 @@ class Controller(QObject):
             self.set_avatar_state(AvatarState.IDLE)
     
     def _send_to_llm(self, user_message: str):
-        """Send message to LLM with streaming.
+        """Send message to LLM with optimized parallel search.
         
-        Runs search intent detection in PARALLEL - no added latency.
-        If search results come back, they're used in a follow-up if needed.
+        Strategy: "Race Condition Optimization"
+        1. Start Main LLM IMMEDIATELY (Zero latency for normal chat)
+        2. Start Search Intent AI in PARALLEL background thread
+        3. If Main LLM asks to search, switch to the parallel result (if ready)
+           or wait for it to finish.
         """
         self._current_response = ""
         self._sentence_buffer = ""
         self._speaking_started = False
-        self._pending_search_results = None  # For parallel search
-        self._search_detected = False  # Reset search detection flag
+        self._pending_search_results = None
+        self._search_detected = False
         
         # Mark timing: LLM start
         self._timing["llm_start"] = time.time()
         self._timing["llm_first_token"] = 0.0
         
-        # Start parallel search intent detection (non-blocking)
+        # Start Parallel Search (Non-blocking)
         if self._tool_manager:
             self._start_parallel_search(user_message)
         
+        # Call Main LLM Immediately
         def on_token(token: str):
             self.llm_token_received.emit(token)
         
@@ -515,37 +537,36 @@ class Controller(QObject):
         def on_error(error: str):
             self.llm_error.emit(error)
         
-        # Start main LLM immediately (no delay from search)
-        print(f"Sending to LLM: {user_message[:50]}...")
+        print(f"Sending to Main LLM: {user_message[:50]}...")
         self._llm.chat_stream(
             user_message,
             on_token=on_token,
             on_complete=on_complete,
             on_error=on_error,
         )
-    
+
     def _start_parallel_search(self, query: str):
         """Run search intent detection and search in background thread."""
         import threading
         
+        backend = self._config.get("ai", "backend", default="ollama")
+        api_key = self._config.get("ai", "openrouter_api_key", default="")
+        
         def search_worker():
             try:
                 from ai.search_intent import get_search_intent_detector
-                detector = get_search_intent_detector()
+                detector = get_search_intent_detector(backend=backend, api_key=api_key)
                 
-                if not detector.is_available():
-                    return
-                
-                if detector.needs_search(query):
-                    print(f"[Parallel] Search needed for: {query[:40]}...")
+                if detector.is_available() and detector.needs_search(query):
+                    print(f"[Parallel] Intent detected. Searching...")
                     search_tool = self._tool_manager.get_tool("search")
-                    if search_tool and search_tool.is_enabled():
+                    if search_tool:
                         result = search_tool.execute(query)
                         if result.success:
                             self._pending_search_results = result.content
-                            print(f"[Parallel] Search results ready")
+                            print(f"[Parallel] Search results ready.")
             except Exception as e:
-                print(f"[Parallel] Search error: {e}")
+                print(f"[Parallel] Error: {e}")
         
         thread = threading.Thread(target=search_worker, daemon=True)
         thread.start()
@@ -559,24 +580,31 @@ class Controller(QObject):
             time_to_first_token = self._timing["llm_first_token"] - self._timing["llm_start"]
             print(f"[TIMING] LLM first token took {time_to_first_token:.3f}s")
         
+        if getattr(self, '_search_detected', False):
+            self._current_response += token
+            return
+            
         self._current_response += token
         self._sentence_buffer += token
-        
+
         # Detect search tag early - stop TTS if we see it
+        # This allows the AI to start answering immediately for non-search queries
         if '<search>' in self._current_response and not getattr(self, '_search_detected', False):
             self._search_detected = True
             print("[Stream] Search tag detected - clearing TTS, searching...")
+            
             # Clear the sentence buffer so we don't speak the content after <search>
             self._sentence_buffer = ""
+            
             # Clear pending TTS and speak acknowledgement
             if self._tts_queue:
                 self._tts_queue.clear_queue()
-            # Speak "Checking..." - this will also update the UI
-            self._speak_sentence("Checking...")
-            return
-        
-        # If search was detected, just accumulate but don't speak
-        if getattr(self, '_search_detected', False):
+            
+            # If parallel search found something, say "Found it" instead of "Checking"
+            if hasattr(self, '_pending_search_results') and self._pending_search_results:
+                 self._speak_sentence("Found it.")
+            else:
+                 self._speak_sentence("Checking...")
             return
         
         # Check for sentence boundary to start speaking (UI updates in _speak_sentence)
@@ -597,102 +625,94 @@ class Controller(QObject):
         if not buffer:
             return None
         
-        # === FAST START: Use smaller thresholds for first chunk ===
-        # This minimizes time-to-first-audio while parallel synthesis
-        # handles smooth flow for subsequent chunks
+        # === FAST START: Optimized for first chunk ===
+        # Goal: Speak reasonably soon, but don't chop thoughts apart
         if not self._speaking_started:
-            MIN_LEN = 12  # Very short - speak almost anything
+            MIN_LEN = 15  # Minimum characters to be worth speaking
             
-            # Sentence end - immediate
-            sentence_end = re.search(r'[.!?](?:\s|$)', buffer)
-            if sentence_end:
-                end_pos = sentence_end.start() + 1
+            # 1. Sentence completion (Best case)
+            # Find first sentence end [.!?]
+            match = re.search(r'([.!?])(?:\s|$)', buffer)
+            if match:
+                end_pos = match.end()
                 sentence = buffer[:end_pos].strip()
-                if len(sentence) >= MIN_LEN:
+                # If it's a very short sentence (e.g. "Okay.", "Yes."), speak it.
+                if len(sentence) >= 2 or (len(sentence) > 0 and sentence[-1] in ".!?"):
                     self._sentence_buffer = buffer[end_pos:].lstrip()
                     return sentence
             
-            # Newline - immediate
-            newline_match = re.search(r'\n', buffer)
-            if newline_match and newline_match.start() >= MIN_LEN:
-                end_pos = newline_match.start()
+            # 2. Strong pauses (Newlines, colons, semicolons)
+            # Good for lists or structured text
+            match = re.search(r'([:\n])(?:\s|$)', buffer)
+            if match and match.start() >= MIN_LEN:
+                end_pos = match.end()
                 sentence = buffer[:end_pos].strip()
-                if sentence:
-                    self._sentence_buffer = buffer[end_pos:].lstrip()
-                    return sentence
-            
-            # Comma/pause - after just 20 chars
-            if len(buffer) > 20:
-                pause_match = re.search(r'[,;:\-–—](?:\s|$)', buffer)
-                if pause_match and pause_match.start() >= 12:
-                    end_pos = pause_match.start() + 1
-                    sentence = buffer[:end_pos].strip()
-                    self._sentence_buffer = buffer[end_pos:].lstrip()
-                    return sentence
-            
-            # Word boundary - after 35 chars
-            if len(buffer) > 35:
-                space_match = re.search(r'\s', buffer[20:])
-                if space_match:
-                    end_pos = 20 + space_match.start()
-                    sentence = buffer[:end_pos].strip()
-                    self._sentence_buffer = buffer[end_pos:].lstrip()
-                    return sentence
-            
-            # Hard cutoff at 45 chars
-            if len(buffer) > 45:
-                sentence = buffer[:35].strip()
-                self._sentence_buffer = buffer[35:].lstrip()
+                self._sentence_buffer = buffer[end_pos:].lstrip()
                 return sentence
+            
+            # 3. Soft pauses (Commas, dashes) - ONLY if buffer is getting long
+            # Don't break on comma immediately to avoid "The cat, [pause] sat down"
+            if len(buffer) > 40:
+                match = re.search(r'([,–—])(?:\s|$)', buffer)
+                if match and match.start() >= MIN_LEN:
+                    end_pos = match.end()
+                    sentence = buffer[:end_pos].strip()
+                    self._sentence_buffer = buffer[end_pos:].lstrip()
+                    return sentence
+
+            # 4. Emergency cutoff - if buffer gets REALLY long without punctuation
+            # Wait longer than before to avoid mid-thought chops
+            if len(buffer) > 80:
+                # Find last space
+                match = re.search(r'\s', buffer[60:])  # Look for space after 60 chars
+                if match:
+                    end_pos = 60 + match.start()
+                    sentence = buffer[:end_pos].strip()
+                    self._sentence_buffer = buffer[end_pos:].lstrip()
+                    return sentence
             
             return None
         
-        # === SMOOTH FLOW: Larger thresholds for subsequent chunks ===
-        # Parallel synthesis is already pre-buffering, so we can wait for
-        # more natural break points
-        MIN_SPEAK_LEN = 15
+        # === SMOOTH FLOW: Subsequent chunks ===
+        # We can afford to wait for full sentences or clear structured breaks
         
-        # Sentence-ending punctuation (highest priority)
-        sentence_end = re.search(r'[.!?](?:\s|$)', buffer)
-        if sentence_end:
-            end_pos = sentence_end.start() + 1
+        # 1. Sentence completion (Priority)
+        match = re.search(r'([.!?])(?:\s|$)', buffer)
+        if match:
+            end_pos = match.end()
             sentence = buffer[:end_pos].strip()
-            if len(sentence) >= MIN_SPEAK_LEN:
+            # Avoid speaking single characters or empty junk
+            if len(sentence) > 1:
                 self._sentence_buffer = buffer[end_pos:].lstrip()
                 return sentence
         
-        # Newlines
-        newline_match = re.search(r'\n', buffer)
-        if newline_match and newline_match.start() >= MIN_SPEAK_LEN:
-            end_pos = newline_match.start()
+        # 2. Strong pauses (Newlines)
+        match = re.search(r'(\n)(?:\s|$)', buffer)
+        if match and match.start() >= 20:
+            end_pos = match.end()
             sentence = buffer[:end_pos].strip()
-            if sentence:
-                self._sentence_buffer = buffer[end_pos:].lstrip()
-                return sentence
-        
-        # Pause punctuation - wait for 45+ chars
-        if len(buffer) > 45:
-            pause_match = re.search(r'[,;:\-–—](?:\s|$)', buffer)
-            if pause_match and pause_match.start() >= 25:
-                end_pos = pause_match.start() + 1
-                sentence = buffer[:end_pos].strip()
-                self._sentence_buffer = buffer[end_pos:].lstrip()
-                return sentence
-        
-        # Word boundary fallback - after 70 chars
-        if len(buffer) > 70:
-            space_match = re.search(r'\s', buffer[45:])
-            if space_match:
-                end_pos = 45 + space_match.start()
-                sentence = buffer[:end_pos].strip()
-                self._sentence_buffer = buffer[end_pos:].lstrip()
-                return sentence
-        
-        # Hard cutoff at 90 chars
-        if len(buffer) > 90:
-            sentence = buffer[:70].strip()
-            self._sentence_buffer = buffer[70:].lstrip()
+            self._sentence_buffer = buffer[end_pos:].lstrip()
             return sentence
+            
+        # 3. Soft pauses - ONLY if sentence is getting long
+        # Wait for a substantial chunk before breaking on commas 
+        if len(buffer) > 60:
+            match = re.search(r'([,;–—])(?:\s|$)', buffer)
+            if match and match.start() >= 30:
+                end_pos = match.end()
+                sentence = buffer[:end_pos].strip()
+                self._sentence_buffer = buffer[end_pos:].lstrip()
+                return sentence
+        
+        # 4. Safety valve for extremely long run-on sentences
+        if len(buffer) > 120:
+             # Find last space to break comfortably
+            match = re.search(r'\s', buffer[100:])
+            if match:
+                end_pos = 100 + match.start()
+                sentence = buffer[:end_pos].strip()
+                self._sentence_buffer = buffer[end_pos:].lstrip()
+                return sentence
         
         return None
     
@@ -763,8 +783,9 @@ class Controller(QObject):
         self._hide_text_counter = getattr(self, '_hide_text_counter', 0) + 1
         
         # Update UI with what we're about to speak
-        if self._overlay:
-            self._overlay.show_text(sentence)
+        # REMOVED: self._overlay.show_text(sentence) - now handled by Sync signal
+        # Note: We still might want to clear it if it's the very first sentence to avoid lag?
+        # Actually, let's rely purely on the sync signal for consistency.
         
         # Mark timing: first audio sent to TTS
         if not self._speaking_started:
@@ -775,6 +796,12 @@ class Controller(QObject):
         
         print(f"TTS (streaming): '{sentence[:40]}...'")
         self._tts_queue.speak(sentence)
+    
+    @Slot(str)
+    def _on_update_overlay_text(self, text: str):
+        """Update overlay text synchronized with TTS."""
+        if self._overlay:
+            self._overlay.show_text(text)
     
     @Slot(str)
     def _on_llm_response_ready(self, response: str):
@@ -797,6 +824,9 @@ class Controller(QObject):
                 # Execute the tool
                 result = self._tool_manager.execute_tool(tool_name, query)
                 
+                # Clear parallel results since we just did a manual tool search
+                self._pending_search_results = None
+                
                 if result.success:
                     print(f"Search executed successfully. Results received.")
                     
@@ -812,19 +842,29 @@ Answer naturally with this information. Start directly with the answer - do NOT 
                     return  # Wait for follow-up response
                 else:
                     print(f"Tool error: {result.error}")
+                    
+                    # Feed error back to LLM so it can apologize/recover
+                    follow_up_prompt = f"""The search tool failed with this error: {result.error}
+                    
+                    Please apologize to the user and try to answer their question based on your existing knowledge if possible."""
+                    
+                    self._send_followup_with_results(follow_up_prompt)
+                    return
         
         # Check if parallel search found results that the LLM didn't use
         if hasattr(self, '_pending_search_results') and self._pending_search_results:
+            results = self._pending_search_results
+            self._pending_search_results = None
+            
             # LLM responded without search data, but we have results ready
             print(f"[Parallel] Injecting search results into follow-up...")
             follow_up_prompt = f"""The user asked: {self._current_response}
 
 Here is current information from the web:
-{self._pending_search_results}
+{results}
 
 Please answer the user's original question using this real-time data. Be conversational and direct."""
             
-            self._pending_search_results = None  # Clear it
             self._send_followup_with_results(follow_up_prompt)
             return  # Wait for follow-up
         
@@ -833,8 +873,7 @@ Please answer the user's original question using this real-time data. Be convers
             response = self._tool_manager.clean_tool_tags(response)
         
         # Update display with cleaned response
-        if self._overlay and response:
-            self._overlay.show_text(response)
+        # self._overlay.show_text(response) # Don't show full text, keep streaming chunks
         
         # Speak any remaining text in the sentence buffer
         remaining = self._sentence_buffer.strip()

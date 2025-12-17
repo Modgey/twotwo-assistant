@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QWidget
 
 from config import get_config
 from ui.theme import (
-    AMBER, AMBER_GLOW, 
+    get_theme_colors,
     FONT_FAMILY, FONT_SIZE_MEDIUM, TYPING_SPEED, FADE_SPEED,
 )
 
@@ -28,21 +28,22 @@ class TextDisplay(QWidget):
         self.config = get_config()
         
         # Display properties
-        self._max_width = 280
+        self._max_width = 300
         self._padding = 1  # Minimal padding - tight to text
         
         # Colors
-        self._text_color = AMBER
-        self._glow_color = (*AMBER_GLOW[:3], 50)
+        theme_name = self.config.get("ui", "display_color", default="amber")
+        colors = get_theme_colors(theme_name)
+        
+        self._text_color = colors["main"]
+        self._glow_color = colors["glow"]
         self._shadow_color = (0, 0, 0)
-        self._shadow_offset = 5
+        self._shadow_offset = 8
         self._bg_color = (0, 0, 0, 60)
         self._bg_blur_passes = 2
         
         # Text state
         self._text = ""
-        self._display_text = ""
-        self._char_index = 0
         self._visible = False
         self._fade_alpha = 0.0
         self._target_alpha = 0.0
@@ -105,13 +106,20 @@ class TextDisplay(QWidget):
         if alignment not in ("left", "center", "right"):
             alignment = "left"
         self._alignment = alignment
+        
+    def set_theme(self, theme_name: str):
+        """Update display theme colors."""
+        colors = get_theme_colors(theme_name)
+        self._text_color = colors["main"]
+        self._glow_color = colors["glow"]
+        if self._visible:
+            self._update_surface()
+        self.update()
     
     def show_text(self, text: str, animate: bool = True):
-        """Show text with optional typing animation."""
+        """Show text immediately (no typing animation)."""
         self._listening_mode = False
         self._text = text
-        self._char_index = 1 if animate else len(text)
-        self._display_text = text[:int(self._char_index)] if text else ""
         self._visible = True
         self._fade_alpha = 1.0
         self._target_alpha = 1.0
@@ -124,8 +132,7 @@ class TextDisplay(QWidget):
         self._listening_mode = True
         self._listening_dots = 1
         self._listening_timer = 0.0
-        self._text = "Listening"
-        self._display_text = "Listening."
+        self._text = "Listening."
         self._visible = True
         self._fade_alpha = 1.0
         self._target_alpha = 1.0
@@ -144,7 +151,6 @@ class TextDisplay(QWidget):
     def clear(self):
         """Immediately clear and hide."""
         self._text = ""
-        self._display_text = ""
         self._visible = False
         self._fade_alpha = 0.0
         self.hide()
@@ -165,14 +171,7 @@ class TextDisplay(QWidget):
                 self._listening_timer = 0.0
                 self._listening_dots = (self._listening_dots % 3) + 1
                 dots = "." * self._listening_dots
-                self._display_text = f"Listening{dots}"
-                self._update_surface()
-        # Typing animation
-        elif self._char_index < len(self._text):
-            self._char_index += TYPING_SPEED * dt
-            new_display = self._text[:int(self._char_index)]
-            if new_display != self._display_text:
-                self._display_text = new_display
+                self._text = f"Listening{dots}"
                 self._update_surface()
         
         # Fade
@@ -188,15 +187,13 @@ class TextDisplay(QWidget):
     
     def _update_surface(self):
         """Update the pygame surface with current text."""
-        if not self._display_text:
+        if not self._text:
             self._surface = None
             self.setFixedSize(1, 1)
             return
         
-        # Use FULL text for size calculation (for stable positioning during animation)
-        # But only display the partial text
-        size_text = self._text if self._text else self._display_text
-        display_text = self._display_text
+        # Simple text wrapping
+        display_text = self._text
         
         # Word wrap for size calculation (using full text)
         def wrap_text(text):
@@ -216,14 +213,13 @@ class TextDisplay(QWidget):
                 lines.append(current_line)
             return lines
         
-        size_lines = wrap_text(size_text)
-        display_lines = wrap_text(display_text)
+        size_lines = wrap_text(display_text)
         
         if not size_lines:
             self._surface = None
             return
         
-        # Calculate size based on FULL text (for stable positioning)
+        # Calculate size
         line_height = self._font.get_linesize()
         text_height = line_height * len(size_lines)
         text_width = max(self._font.size(line)[0] for line in size_lines) if size_lines else 0
@@ -247,7 +243,7 @@ class TextDisplay(QWidget):
         left_edge = self._padding + shadow_padding
         right_edge = width - self._padding - shadow_padding
         
-        for i, line in enumerate(display_lines):
+        for i, line in enumerate(size_lines):
             line_width = self._font.size(line)[0]
             
             # Calculate x based on alignment
@@ -302,7 +298,7 @@ class TextDisplay(QWidget):
         # Draw drop shadow (multiple layers for depth)
         shadow_surface = self._font.render(text, True, self._shadow_color)
         for offset in range(self._shadow_offset, 0, -1):
-            alpha = 80 // offset  # Fade out as we go outward
+            alpha = 140 // offset  # Fade out as we go outward
             shadow_surface.set_alpha(alpha)
             self._surface.blit(shadow_surface, (x + offset, y + offset))
         

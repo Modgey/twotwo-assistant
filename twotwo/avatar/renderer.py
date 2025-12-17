@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QWidget
 from core.state import AvatarState
 from avatar.expressions import get_expression, ExpressionParams, EyeParams, ApertureParams
 from ui.theme import (
-    AMBER_FULL, AMBER_GLOW,
+    get_theme_colors,
     SCANLINE_SPACING, SCANLINE_ALPHA
 )
 
@@ -25,6 +25,9 @@ class AvatarRenderer(QWidget):
     
     def __init__(self, size: int = 200, parent=None):
         super().__init__(parent)
+        
+        from config import get_config
+        self.config = get_config()
         
         self.avatar_size = size
         self.setFixedSize(size, size)
@@ -39,8 +42,11 @@ class AvatarRenderer(QWidget):
         self._surface = pygame.Surface((self._render_size, self._render_size), pygame.SRCALPHA)
         
         # Avatar color - from shared theme
-        self._color = AMBER_FULL
-        self._glow_color = AMBER_GLOW
+        theme_name = self.config.get("ui", "display_color", default="amber")
+        colors = get_theme_colors(theme_name)
+        
+        self._color = colors["main"]
+        self._glow_color = colors["glow"]
         self._opacity = 1.0  # 0.0 to 1.0
         
         # Hologram effect settings - from shared theme
@@ -137,6 +143,12 @@ class AvatarRenderer(QWidget):
     def set_opacity(self, opacity: float):
         """Set avatar opacity (0.0 to 1.0)."""
         self._opacity = max(0.0, min(1.0, opacity))
+        
+    def set_theme(self, theme_name: str):
+        """Update avatar theme colors."""
+        colors = get_theme_colors(theme_name)
+        self._color = colors["main"]
+        self._glow_color = colors["glow"]
     
     def _apply_expression(self, expr: ExpressionParams):
         """Apply expression parameters."""

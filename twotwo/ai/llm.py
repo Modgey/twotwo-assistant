@@ -5,6 +5,7 @@ Ollama integration with streaming support for local AI inference.
 
 import json
 import threading
+import codecs
 from datetime import datetime
 from typing import Callable, Generator, Optional
 import requests
@@ -27,7 +28,7 @@ class OllamaLLM:
         self._config = get_config()
         
         # Get settings from config or use defaults
-        self.model = model or self._config.get("ai", "model", default="llama3.2:3b")
+        self.model = model or self._config.get("ai", "model", default="gemma3:4b")
         self.system_prompt = system_prompt or self._config.get(
             "ai", "personality",
             default="You are TwoTwo, a helpful AI assistant. Be concise and direct."
@@ -306,23 +307,38 @@ class OllamaLLM:
                         on_error(f"Ollama returned status {response.status_code}")
                     return
                 
-                for line in response.iter_lines():
-                    if not line:
+                # Manual line buffering for instant streaming (no extensive buffering)
+                buffer = ""
+                decoder = codecs.getincrementaldecoder("utf-8")(errors='replace')
+                
+                for chunk in response.iter_content(chunk_size=None):
+                    if not chunk:
                         continue
-                    
-                    try:
-                        data = json.loads(line)
-                        content = data.get("message", {}).get("content", "")
-                        if content:
-                            full_response += content
-                            on_token(content)
                         
-                        # Check if done
-                        if data.get("done", False):
-                            break
+                    # Decode chunk safely (handling split multi-byte chars)
+                    text = decoder.decode(chunk, final=False)
+                    buffer += text
+                    
+                    # Process complete lines
+                    while '\n' in buffer:
+                        line, buffer = buffer.split('\n', 1)
+                        line = line.strip()
+                        if not line:
+                            continue
                             
-                    except json.JSONDecodeError:
-                        continue
+                        try:
+                            data = json.loads(line)
+                            content = data.get("message", {}).get("content", "")
+                            if content:
+                                full_response += content
+                                on_token(content)
+                            
+                            # Check if done
+                            if data.get("done", False):
+                                break
+                                
+                        except json.JSONDecodeError:
+                            continue
                 
                 # Store in history
                 self._messages.append({"role": "user", "content": user_message})
@@ -408,7 +424,170 @@ class OllamaLLM:
             if len(self._messages) > 20:
                 self._messages = self._messages[-20:]
                 
+            if len(self._messages) > 20:
+                self._messages = self._messages[-20:]
+                
         except requests.RequestException as e:
             self._available = False
             yield f"Error: {e}"
+
+
+class OpenRouterLLM(OllamaLLM):
+    """Interface to OpenRouter for cloud LLM inference."""
+    
+    API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        system_prompt: Optional[str] = None
+    ):
+        # Initialize without calling super().__init__ completely since we struggle with host/checking
+        self._config = get_config()
+        self.model = model
+        self.api_key = api_key
+        self.system_prompt = system_prompt or self._config.get(
+            "ai", "personality",
+            default="You are TwoTwo, a helpful AI assistant."
+        )
+        
+        self._session = requests.Session()
+        self._session.headers.update({
+            "Authorization": f"Bearer {self.api_key}",
+            "HTTP-Referer": "https://github.com/modgey/twotwo-assistant",
+            "X-Title": "TwoTwo Assistant",
+            "Content-Type": "application/json"
+        })
+        
+        self._messages: list[dict] = []
+        self._available = True  # Assume available if key provided
+        
+        # No keep-alive needed for cloud
+        self._keep_alive_running = False
+        self._keep_alive_thread = None
+
+    def _check_connection(self) -> bool:
+        """Check if API key works."""
+        return True  # Skip actual check to avoid latency, handle errors in requests
+        
+    def _start_keep_alive(self):
+        pass  # Not needed
+        
+    def warm_up(self):
+        pass  # Not needed
+    
+    def set_model(self, model: str):
+        """Change the active model."""
+        self.model = model
+        self._config.set("ai", "openrouter_model", model)
+        
+    def chat_stream(
+        self,
+        user_message: str,
+        on_token: Callable[[str], None],
+        on_complete: Optional[Callable[[str], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+    ) -> threading.Thread:
+        """Stream response from OpenRouter."""
+        def worker():
+            if not self.api_key:
+                if on_error: on_error("Error: OpenRouter API key not configured")
+                return
+            
+            # Prepare messages
+            recent_history = self._messages[-4:] if len(self._messages) > 4 else self._messages
+            messages = [{"role": "system", "content": self.get_full_system_prompt()}]
+            messages.extend(recent_history)
+            messages.append({"role": "user", "content": user_message})
+            
+            full_response = ""
+            
+            try:
+                response = self._session.post(
+                    self.API_URL,
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "stream": True,
+                    },
+                    stream=True,
+                    timeout=120
+                )
+                
+                if response.status_code != 200:
+                    try:
+                        err_msg = response.json().get('error', {}).get('message', str(response.status_code))
+                    except:
+                        err_msg = str(response.status_code)
+                    if on_error: on_error(f"OpenRouter Error: {err_msg}")
+                    return
+                
+                # Manual line buffering for instant streaming
+                buffer = ""
+                decoder = codecs.getincrementaldecoder("utf-8")(errors='replace')
+                
+                for chunk in response.iter_content(chunk_size=None):
+                    if not chunk: continue
+                    
+                    # Decode chunk safely
+                    text = decoder.decode(chunk, final=False)
+                    buffer += text
+                    
+                    # Process complete lines
+                    while '\n' in buffer:
+                        line, buffer = buffer.split('\n', 1)
+                        line = line.strip()
+                        
+                        if not line: continue
+                        
+                        if line.startswith('data: '):
+                            line = line[6:]
+                            
+                        if line == '[DONE]':
+                            break
+                            
+                        try:
+                            data = json.loads(line)
+                            delta = data.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            
+                            if content:
+                                full_response += content
+                                on_token(content)
+                        except json.JSONDecodeError:
+                            continue
+                
+                # Update history
+                self._messages.append({"role": "user", "content": user_message})
+                self._messages.append({"role": "assistant", "content": full_response})
+                if len(self._messages) > 20:
+                    self._messages = self._messages[-20:]
+                
+                if on_complete:
+                    on_complete(full_response)
+                    
+            except Exception as e:
+                if on_error: on_error(f"Network Error: {str(e)}")
+        
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        return thread
+
+
+def get_llm(backend: str = "ollama", **kwargs):
+    """Factory to get the appropriate LLM backend."""
+    if backend == "openrouter":
+        return OpenRouterLLM(
+            model=kwargs.get("model", "google/gemini-2.0-flash-exp:free"),
+            api_key=kwargs.get("api_key", ""),
+            system_prompt=kwargs.get("system_prompt")
+        )
+    else:
+        return OllamaLLM(
+            model=kwargs.get("model"),
+            system_prompt=kwargs.get("system_prompt"),
+            host=kwargs.get("host")
+        )
+
 
